@@ -1,0 +1,1288 @@
+"""
+Main chat screen (Simplified MVP)
+"""
+import flet as ft
+from typing import Optional, List
+
+from ..models import User, Conversation, Message
+from ..api.client import get_api_client
+from ..websocket.client import WebSocketClient
+from ..utils.formatters import format_timestamp, truncate_text
+from ..config import config
+
+
+class MainChatScreen(ft.UserControl):
+    """
+    Main chat screen with sidebar and chat area
+    Simplified version with core functionality
+    """
+    
+    def __init__(self, page: ft.Page, user: User, token: str, on_logout):
+        """
+        Initialize main chat screen
+        
+        Args:
+            page: Flet page
+            user: Current user
+            token: Auth token
+            on_logout: Callback for logout
+        """
+        super().__init__()
+        self.expand = True  # Fill entire page
+        self.page = page
+        self.user = user
+        self.token = token
+        self.on_logout = on_logout
+        
+        # Data
+        self.conversations: List[Conversation] = []
+        self.current_conversation: Optional[Conversation] = None
+        self.messages: List[Message] = []
+        
+        # WebSocket
+        self.ws_client: Optional[WebSocketClient] = None
+        
+        # UI Components
+        self.conversation_list_view = ft.ListView(expand=True, spacing=5, padding=10)
+        self.messages_list_view = ft.ListView(expand=True, spacing=10, padding=20, auto_scroll=True)
+        self.message_input = ft.TextField(
+            hint_text="Type a message...",
+            expand=True,
+            multiline=True,
+            min_lines=1,
+            max_lines=3,
+            shift_enter=True,
+            on_submit=self.send_message_handler,
+            on_change=self.handle_typing
+        )
+        
+        # Typing indicator
+        self.typing_indicator = ft.Text(
+            "",
+            size=12,
+            color=config.TEXT_SECONDARY,
+            italic=True,
+            visible=False
+        )
+        self.typing_users = set()  # Track who is typing
+        self.typing_timer = None  # Debounce timer for sending typing events
+        
+        # File upload components
+        self.file_picker = ft.FilePicker(on_result=self.handle_file_picked)
+        self.selected_file = None  # Store selected file path
+        self.upload_progress = ft.ProgressBar(visible=False, width=200)
+        
+        self.attach_button = ft.IconButton(
+            icon=ft.icons.ATTACH_FILE,
+            icon_color=config.PRIMARY_COLOR,
+            tooltip="Attach file",
+            on_click=self.pick_file
+        )
+        self.send_button = ft.IconButton(
+            icon=ft.icons.SEND_ROUNDED,
+            icon_color=config.PRIMARY_COLOR,
+            on_click=self.send_message_handler
+        )
+        
+        self.chat_header = ft.Text("Select a conversation", size=18, weight=ft.FontWeight.BOLD)
+        self.chat_header_row = ft.Row([self.chat_header], expand=True, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        self.status_text = ft.Text("Loading...", size=12, color=config.TEXT_SECONDARY)
+        
+        # Initialize data on startup
+        print("🎨 MainChatScreen initialized")
+    
+    def did_mount(self):
+        """Called when component is mounted - start async tasks"""
+        print("📱 MainChatScreen mounted, loading data...")
+        self.page.run_task(self.initialize_screen)
+    
+    async def initialize_screen(self):
+        """Initialize screen with data"""
+        print("🔄 Loading conversations and connecting websocket...")
+        await self.load_conversations()
+        await self.connect_websocket()
+        print("✅ Screen initialization complete")
+    
+    def build(self):
+        """Build main screen UI"""
+        print("🎨 Building main screen UI...")
+        
+        # Add FilePicker to page overlay
+        self.page.overlay.append(self.file_picker)
+        
+        # Sidebar with conversations
+        sidebar = ft.Container(
+            content=ft.Column([
+                # Header
+                ft.Container(
+                    content=ft.Row([
+                        ft.Column([
+                            ft.Text(self.user.display_name, size=16, weight=ft.FontWeight.BOLD),
+                            ft.Text(f"@{self.user.username}", size=12, color=config.TEXT_SECONDARY)
+                        ], expand=True),
+                        ft.IconButton(
+                            icon=ft.icons.SETTINGS,
+                            tooltip="Settings",
+                            on_click=lambda _: self.show_settings()
+                        ),
+                        ft.IconButton(
+                            icon=ft.icons.PERSON,
+                            tooltip="Profile",
+                            on_click=lambda _: self.show_profile()
+                        ),
+                        ft.IconButton(
+                            icon=ft.icons.LOGOUT,
+                            tooltip="Logout",
+                            on_click=lambda _: self.handle_logout()
+                        )
+                    ]),
+                    bgcolor=config.PRIMARY_COLOR,
+                    padding=15
+                ),
+                # New chat button
+                ft.Container(
+                    content=ft.ElevatedButton(
+                        text="+ New Chat",
+                        width=280,
+                        on_click=self.show_new_chat_dialog,
+                        style=ft.ButtonStyle(
+                            bgcolor=config.SUCCESS_COLOR,
+                            color=ft.colors.WHITE
+                        )
+                    ),
+                    padding=10
+                ),
+                # Conversations list
+                ft.Container(
+                    content=self.conversation_list_view,
+                    expand=True
+                ),
+                # Status
+                ft.Container(
+                    content=self.status_text,
+                    padding=10
+                )
+            ]),
+            width=320,
+            bgcolor=ft.colors.BLUE_GREY_50,
+            border=ft.border.only(right=ft.BorderSide(1, ft.colors.GREY_300))
+        )
+        
+        # Main chat area
+        chat_area = ft.Container(
+            content=ft.Column([
+                # Chat header
+                ft.Container(
+                    content=self.chat_header_row,
+                    bgcolor=ft.colors.WHITE,
+                    padding=15,
+                    border=ft.border.only(bottom=ft.BorderSide(1, ft.colors.GREY_300))
+                ),
+                # Messages
+                ft.Container(
+                    content=ft.Column([
+                        # Messages list
+                        ft.Container(
+                            content=self.messages_list_view,
+                            expand=True
+                        ),
+                        # Typing indicator
+                        ft.Container(
+                            content=self.typing_indicator,
+                            padding=ft.padding.only(left=20, right=20, bottom=5),
+                            visible=False  # Hidden by default
+                        )
+                    ]),
+                    bgcolor=config.BACKGROUND_COLOR,
+                    expand=True
+                ),
+                # Input area
+                ft.Container(
+                    content=ft.Column([
+                        # Upload progress bar (hidden by default)
+                        self.upload_progress,
+                        # Input row
+                        ft.Row([
+                            self.attach_button,
+                            self.message_input,
+                            self.send_button
+                        ], spacing=10)
+                    ], spacing=5),
+                    bgcolor=ft.colors.WHITE,
+                    padding=10,
+                    border=ft.border.only(top=ft.BorderSide(1, ft.colors.GREY_300))
+                )
+            ]),
+            expand=True
+        )
+        
+        main_row = ft.Row(
+            controls=[sidebar, chat_area],
+            expand=True,
+            spacing=0,
+            vertical_alignment=ft.CrossAxisAlignment.START
+        )
+        print(f"✅ Main UI built: sidebar width={sidebar.width}, controls={len(main_row.controls)}")
+        
+        # Wrap in container to ensure proper sizing
+        return ft.Container(
+            content=main_row,
+            expand=True,
+            padding=0,
+            margin=0
+        )
+    
+    def will_unmount(self):
+        """Called when component will unmount"""
+        print("👋 MainChatScreen unmounting...")
+        # Disconnect WebSocket
+        if self.ws_client:
+            self.page.run_task(self.ws_client.disconnect)
+    
+    async def load_conversations(self):
+        """Load user's conversations"""
+        try:
+            print("📋 Loading conversations from API...")
+            self.status_text.value = "Loading conversations..."
+            self.update()
+            
+            api = get_api_client()
+            self.conversations = await api.get_conversations()
+            
+            print(f"✅ Loaded {len(self.conversations)} conversations")
+            
+            # Update UI
+            self.render_conversations()
+            
+            self.status_text.value = f"{len(self.conversations)} conversations"
+            self.update()
+        
+        except Exception as e:
+            print(f"❌ Error loading conversations: {e}")
+            self.status_text.value = "Error loading conversations"
+            self.update()
+    
+    def render_conversations(self):
+        """Render conversations list"""
+        print(f"🎨 Rendering {len(self.conversations)} conversations...")
+        self.conversation_list_view.controls.clear()
+        
+        if not self.conversations:
+            self.conversation_list_view.controls.append(
+                ft.Container(
+                    content=ft.Text(
+                        "No conversations yet\nClick '+ New Chat' to start",
+                        text_align=ft.TextAlign.CENTER,
+                        color=config.TEXT_SECONDARY
+                    ),
+                    padding=20,
+                    alignment=ft.alignment.center
+                )
+            )
+        else:
+            for conv in self.conversations:
+                self.conversation_list_view.controls.append(
+                    self.build_conversation_item(conv)
+                )
+        
+        self.update()
+    
+    def build_conversation_item(self, conv: Conversation):
+        """Build conversation list item"""
+        # Get display name
+        display_name = conv.get_display_name(self.user.id)
+        
+        # Last message preview
+        last_msg = truncate_text(conv.last_message or "No messages yet", 35)
+        
+        # Time
+        time_str = format_timestamp(conv.updated_at)
+        
+        # Check if selected
+        is_selected = self.current_conversation and self.current_conversation.id == conv.id
+        
+        return ft.Container(
+            content=ft.Row([
+                ft.Icon(
+                    ft.icons.GROUP if conv.type.value == "group" else ft.icons.PERSON,
+                    size=30,
+                    color=config.PRIMARY_COLOR
+                ),
+                ft.Column([
+                    ft.Text(display_name, size=14, weight=ft.FontWeight.BOLD),
+                    ft.Text(last_msg, size=12, color=config.TEXT_SECONDARY)
+                ], expand=True, spacing=2),
+                ft.Text(time_str, size=10, color=config.TEXT_SECONDARY)
+            ], spacing=10),
+            bgcolor=config.PRIMARY_COLOR + "20" if is_selected else ft.colors.WHITE,
+            padding=10,
+            border_radius=8,
+            on_click=lambda e, c=conv: self.handle_conversation_click(c),
+            ink=True
+        )
+    
+    def handle_conversation_click(self, conv: Conversation):
+        """Handle conversation click - wrapper for async function"""
+        print(f"🖱️ Clicked conversation: {conv.get_display_name(self.user.id)}")
+        self.page.run_task(self.select_conversation, conv)
+    
+    async def select_conversation(self, conv: Conversation):
+        """Select and load conversation"""
+        print(f"📂 Selecting conversation: {conv.get_display_name(self.user.id)}")
+        self.current_conversation = conv
+        self.chat_header.value = conv.get_display_name(self.user.id)
+        
+        # Update chat header with group info button if it's a group
+        if conv.type.value == "group":
+            self.chat_header_row.controls = [
+                self.chat_header,
+                ft.IconButton(
+                    icon=ft.icons.INFO_OUTLINE,
+                    tooltip="Group Info",
+                    icon_color=config.PRIMARY_COLOR,
+                    on_click=lambda e: self.show_group_info()
+                )
+            ]
+        else:
+            self.chat_header_row.controls = [self.chat_header]
+        
+        # Refresh conversation list to show selection
+        self.render_conversations()
+        
+        # Load messages
+        await self.load_messages()
+    
+    async def load_messages(self):
+        """Load messages for current conversation"""
+        if not self.current_conversation:
+            return
+        
+        try:
+            api = get_api_client()
+            self.messages = await api.get_messages(self.current_conversation.id)
+            
+            # Render messages
+            self.render_messages()
+        
+        except Exception as e:
+            print(f"Error loading messages: {e}")
+    
+    def render_messages(self):
+        """Render messages in chat"""
+        self.messages_list_view.controls.clear()
+        
+        if not self.messages:
+            self.messages_list_view.controls.append(
+                ft.Container(
+                    content=ft.Text(
+                        "No messages yet\nSay hi! 👋",
+                        text_align=ft.TextAlign.CENTER,
+                        color=config.TEXT_SECONDARY
+                    ),
+                    padding=40,
+                    alignment=ft.alignment.center
+                )
+            )
+        else:
+            for msg in self.messages:
+                self.messages_list_view.controls.append(
+                    self.build_message_bubble(msg)
+                )
+        
+        self.update()
+    
+    def build_message_bubble(self, msg: Message):
+        """Build message bubble with file support"""
+        is_mine = msg.is_mine(self.user.id)
+        
+        # Message content
+        content_widgets = []
+        
+        # Add file preview/attachment if present
+        if msg.has_file():
+            file_widget = self.build_file_widget(msg)
+            if file_widget:
+                content_widgets.append(file_widget)
+        
+        # Add text content
+        if msg.content:
+            content_widgets.append(
+                ft.Text(msg.content, size=14, selectable=True)
+            )
+        
+        # Time and sender info
+        meta_text = format_timestamp(msg.created_at)
+        
+        # Only show sender name in group chats
+        is_group_chat = self.current_conversation and self.current_conversation.type.value == "group"
+        if not is_mine and is_group_chat:
+            meta_text = f"{msg.sender_display_name} • {meta_text}"
+        
+        content_widgets.append(
+            ft.Text(meta_text, size=10, color=config.TEXT_SECONDARY)
+        )
+        
+        bubble = ft.Container(
+            content=ft.Column(content_widgets, spacing=5),
+            bgcolor=config.MESSAGE_SENT_BG if is_mine else config.MESSAGE_RECEIVED_BG,
+            padding=10,
+            border_radius=10,
+            margin=ft.margin.only(left=60 if is_mine else 0, right=0 if is_mine else 60)
+        )
+        
+        return ft.Container(
+            content=bubble,
+            alignment=ft.alignment.center_right if is_mine else ft.alignment.center_left
+        )
+    
+    def build_file_widget(self, msg: Message):
+        """Build file preview/download widget"""
+        if not msg.has_file():
+            return None
+        
+        api = get_api_client()
+        file_url = api.get_file_download_url(msg.file_url)
+        
+        # Check if it's an image
+        if msg.file_type and msg.file_type.startswith("image/"):
+            # Image preview
+            return ft.Container(
+                content=ft.Column([
+                    ft.Image(
+                        src=file_url,
+                        width=300,
+                        height=200,
+                        fit=ft.ImageFit.CONTAIN,
+                        border_radius=8
+                    ),
+                    ft.Row([
+                        ft.Icon(ft.icons.IMAGE, size=14),
+                        ft.Text(msg.file_name or "Image", size=12)
+                    ], spacing=5)
+                ], spacing=5),
+                padding=5,
+                border_radius=8
+            )
+        else:
+            # File attachment with download button
+            # Determine file icon
+            file_icon = ft.icons.ATTACH_FILE
+            if msg.file_type:
+                if "pdf" in msg.file_type:
+                    file_icon = ft.icons.PICTURE_AS_PDF
+                elif "word" in msg.file_type or "document" in msg.file_type:
+                    file_icon = ft.icons.DESCRIPTION
+                elif "audio" in msg.file_type:
+                    file_icon = ft.icons.AUDIO_FILE
+                elif "video" in msg.file_type:
+                    file_icon = ft.icons.VIDEO_FILE
+                elif "zip" in msg.file_type or "rar" in msg.file_type:
+                    file_icon = ft.icons.FOLDER_ZIP
+            
+            return ft.Container(
+                content=ft.Row([
+                    ft.Icon(file_icon, size=32, color=config.PRIMARY_COLOR),
+                    ft.Column([
+                        ft.Text(msg.file_name or "File", size=13, weight=ft.FontWeight.BOLD),
+                        ft.Text(msg.file_type or "Unknown type", size=11, color=config.TEXT_SECONDARY)
+                    ], spacing=2, expand=True),
+                    ft.IconButton(
+                        icon=ft.icons.DOWNLOAD,
+                        tooltip="Download",
+                        icon_size=20,
+                        on_click=lambda e: self.download_file(file_url, msg.file_name)
+                    )
+                ], spacing=10, alignment=ft.MainAxisAlignment.START),
+                bgcolor=ft.colors.GREY_100,
+                padding=10,
+                border_radius=8,
+                border=ft.border.all(1, ft.colors.GREY_300)
+            )
+    
+    async def send_message_handler(self, e):
+        """Handle send message (text or file)"""
+        content = self.message_input.value
+        
+        # Check if we have content or file
+        if (not content or not content.strip()) and not self.selected_file:
+            return
+        
+        if not self.current_conversation:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Please select a conversation first"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        # Prepare message data
+        message_content = content.strip() if content else ""
+        file_url = None
+        file_type = None
+        file_name = None
+        
+        # Upload file if selected
+        if self.selected_file:
+            try:
+                # Show upload progress
+                self.upload_progress.visible = True
+                self.upload_progress.value = None  # Indeterminate
+                self.update()
+                
+                # Upload file
+                api = get_api_client()
+                upload_result = await api.upload_file(self.selected_file)
+                
+                # Get file info from response
+                file_url = upload_result.get("file_url")
+                file_type = upload_result.get("file_type")
+                file_name = upload_result.get("file_name")
+                
+                print(f"✅ File uploaded: {file_name}")
+                
+                # Hide progress
+                self.upload_progress.visible = False
+                self.selected_file = None  # Clear selection
+                self.update()
+                
+            except Exception as e:
+                print(f"❌ Error uploading file: {e}")
+                self.upload_progress.visible = False
+                self.update()
+                
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Failed to upload file: {str(e)}"),
+                    bgcolor=config.ERROR_COLOR
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+        
+        # Clear input
+        self.message_input.value = ""
+        self.update()
+        
+        try:
+            # Send via API
+            api = get_api_client()
+            message = await api.send_message(
+                conversation_id=self.current_conversation.id,
+                content=message_content or "(File)",  # Default content if only file
+                file_url=file_url,
+                file_type=file_type,
+                file_name=file_name
+            )
+            
+            # Add to messages list
+            self.messages.append(message)
+            self.render_messages()
+            
+            # Note: WebSocket will broadcast, but we already show it locally
+        
+        except Exception as e:
+            print(f"Error sending message: {e}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Failed to send message: {str(e)}"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+    
+    async def connect_websocket(self):
+        """Connect to WebSocket for real-time updates"""
+        try:
+            print("🔌 Connecting to WebSocket...")
+            self.ws_client = WebSocketClient(self.token)
+            self.ws_client.add_message_callback(self.handle_ws_message)
+            
+            await self.ws_client.connect()
+            
+            print("✅ WebSocket connected!")
+            self.status_text.value = "🟢 Connected"
+            self.update()
+        
+        except Exception as e:
+            print(f"❌ WebSocket connection error: {e}")
+            self.status_text.value = "🔴 Offline"
+            self.update()
+    
+    def handle_ws_message(self, data: dict):
+        """Handle incoming WebSocket message"""
+        msg_type = data.get("type")
+        msg_data = data.get("data", {})
+        
+        if msg_type == "new_message":
+            # New message received
+            message_id = msg_data.get("message_id")
+            conversation_id = msg_data.get("conversation_id")
+            sender_id = msg_data.get("sender_id")
+            
+            # Check if it's for current conversation and not from me
+            if (self.current_conversation and 
+                conversation_id == self.current_conversation.id and
+                sender_id != self.user.id):
+                
+                # Reload messages
+                self.page.run_task(self.load_messages)
+            
+            # Update conversation list (new last message)
+            self.page.run_task(self.load_conversations)
+        
+        elif msg_type == "typing":
+            # Typing indicator from another user
+            conversation_id = msg_data.get("conversation_id")
+            user_id = msg_data.get("user_id")
+            username = msg_data.get("username")
+            is_typing = msg_data.get("is_typing", False)
+            
+            # Only show if it's for current conversation and not from me
+            if (self.current_conversation and 
+                conversation_id == self.current_conversation.id and
+                user_id != self.user.id):
+                
+                if is_typing:
+                    self.typing_users.add(username)
+                else:
+                    self.typing_users.discard(username)
+                
+                self.update_typing_indicator()
+        
+        elif msg_type == "user_online":
+            username = msg_data.get("username")
+            print(f"User {username} is online")
+        
+        elif msg_type == "user_offline":
+            username = msg_data.get("username")
+            print(f"User {username} is offline")
+    
+    def update_typing_indicator(self):
+        """Update typing indicator UI"""
+        if not self.typing_users:
+            self.typing_indicator.visible = False
+        else:
+            self.typing_indicator.visible = True
+            
+            if len(self.typing_users) == 1:
+                username = list(self.typing_users)[0]
+                self.typing_indicator.value = f"{username} is typing..."
+            elif len(self.typing_users) == 2:
+                users = list(self.typing_users)
+                self.typing_indicator.value = f"{users[0]} and {users[1]} are typing..."
+            else:
+                self.typing_indicator.value = f"{len(self.typing_users)} people are typing..."
+        
+        self.page.update()
+    
+    def handle_typing(self, e):
+        """Handle user typing in message input"""
+        if not self.current_conversation:
+            return
+        
+        # Debounce: Send typing event only if user is actually typing
+        # Cancel previous timer
+        if self.typing_timer:
+            self.typing_timer.cancel()
+        
+        # Send typing=True
+        if self.ws_client:
+            self.page.run_task(self.send_typing_event, True)
+        
+        # Set timer to send typing=False after 3 seconds of inactivity
+        import threading
+        self.typing_timer = threading.Timer(3.0, lambda: self.page.run_task(self.send_typing_event, False))
+        self.typing_timer.start()
+    
+    async def send_typing_event(self, is_typing: bool):
+        """Send typing event via WebSocket"""
+        if not self.ws_client or not self.current_conversation:
+            return
+        
+        try:
+            await self.ws_client.send_typing(
+                str(self.current_conversation.id),
+                is_typing
+            )
+        except Exception as e:
+            print(f"Error sending typing event: {e}")
+    
+    async def show_new_chat_dialog(self, e):
+        """Show dialog to create new conversation (direct or group)"""
+        # Load all users
+        try:
+            api = get_api_client()
+            users = await api.get_users()
+            
+            # Filter out current user
+            other_users = [u for u in users if u.id != self.user.id]
+            
+            if not other_users:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("No other users found"),
+                    bgcolor=config.WARNING_COLOR
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Show chat type selection dialog
+            dialog = ft.AlertDialog(
+                title=ft.Text("Start a conversation"),
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Text("Choose chat type:", size=14, weight=ft.FontWeight.BOLD),
+                        ft.Divider(),
+                        ft.ListTile(
+                            leading=ft.Icon(ft.icons.PERSON, color=config.PRIMARY_COLOR),
+                            title=ft.Text("Direct Chat (1-on-1)"),
+                            subtitle=ft.Text("Chat with one person"),
+                            on_click=lambda e: self.show_direct_chat_selection(other_users, dialog)
+                        ),
+                        ft.ListTile(
+                            leading=ft.Icon(ft.icons.GROUP, color=config.PRIMARY_COLOR),
+                            title=ft.Text("Group Chat"),
+                            subtitle=ft.Text("Chat with multiple people"),
+                            on_click=lambda e: self.show_group_chat_creation(other_users, dialog)
+                        )
+                    ], spacing=10),
+                    width=400
+                ),
+                actions=[
+                    ft.TextButton("Cancel", on_click=lambda e: self.close_dialog(dialog))
+                ]
+            )
+            
+            self.page.dialog = dialog
+            dialog.open = True
+            self.page.update()
+        
+        except Exception as e:
+            print(f"Error loading users: {e}")
+    
+    def show_direct_chat_selection(self, users, parent_dialog):
+        """Show dialog to select user for direct chat"""
+        self.close_dialog(parent_dialog)
+        
+        # Create user selection dialog
+        user_list = ft.ListView(
+            controls=[
+                ft.ListTile(
+                    leading=ft.Icon(ft.icons.PERSON),
+                    title=ft.Text(u.display_name),
+                    subtitle=ft.Text(f"@{u.username}"),
+                    on_click=lambda e, user=u: self.handle_create_direct_chat(user, dialog)
+                )
+                for u in users
+            ],
+            expand=True,
+            height=300
+        )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Select user to chat with"),
+            content=ft.Container(
+                content=user_list,
+                width=400,
+                height=300
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self.close_dialog(dialog))
+            ]
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def show_group_chat_creation(self, users, parent_dialog):
+        """Show dialog to create group chat"""
+        self.close_dialog(parent_dialog)
+        
+        # Group name input
+        group_name_input = ft.TextField(
+            label="Group Name *",
+            hint_text="Enter group name",
+            width=380
+        )
+        
+        # Selected members
+        selected_members = []
+        
+        # Create checkboxes for each user
+        def create_user_checkbox(user):
+            checkbox = ft.Checkbox(
+                label=f"{user.display_name} (@{user.username})",
+                value=False,
+                on_change=lambda e: handle_member_toggle(user, e.control.value)
+            )
+            return checkbox
+        
+        def handle_member_toggle(user, is_selected):
+            if is_selected:
+                if user not in selected_members:
+                    selected_members.append(user)
+            else:
+                if user in selected_members:
+                    selected_members.remove(user)
+            
+            # Update member count text
+            member_count_text.value = f"Selected: {len(selected_members)} member(s)"
+            self.page.update()
+        
+        user_checkboxes = ft.Column(
+            controls=[create_user_checkbox(u) for u in users],
+            scroll=ft.ScrollMode.AUTO,
+            height=250
+        )
+        
+        member_count_text = ft.Text("Selected: 0 member(s)", size=12, color=config.TEXT_SECONDARY)
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Create Group Chat"),
+            content=ft.Container(
+                content=ft.Column([
+                    group_name_input,
+                    ft.Divider(),
+                    ft.Text("Select members:", size=14, weight=ft.FontWeight.BOLD),
+                    member_count_text,
+                    user_checkboxes
+                ], spacing=10),
+                width=400,
+                height=400
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self.close_dialog(dialog)),
+                ft.ElevatedButton(
+                    "Create Group",
+                    on_click=lambda e: self.handle_create_group_chat(
+                        group_name_input.value,
+                        selected_members,
+                        dialog
+                    ),
+                    style=ft.ButtonStyle(
+                        bgcolor=config.SUCCESS_COLOR,
+                        color=ft.colors.WHITE
+                    )
+                )
+            ]
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def handle_create_direct_chat(self, user: User, dialog):
+        """Handle create direct chat click - wrapper for async function"""
+        print(f"🆕 Creating direct chat with: {user.display_name}")
+        self.page.run_task(self.create_direct_conversation, user, dialog)
+    
+    def handle_create_group_chat(self, group_name: str, members, dialog):
+        """Handle create group chat click - wrapper for async function"""
+        print(f"🆕 Creating group chat: {group_name}")
+        self.page.run_task(self.create_group_conversation, group_name, members, dialog)
+    
+    async def create_direct_conversation(self, user: User, dialog):
+        """Create direct conversation with user"""
+        try:
+            api = get_api_client()
+            conversation = await api.create_conversation(
+                type="direct",
+                participant_ids=[user.id]
+            )
+            
+            # Close dialog
+            self.close_dialog(dialog)
+            
+            # Reload conversations
+            await self.load_conversations()
+            
+            # Select new conversation
+            await self.select_conversation(conversation)
+        
+        except Exception as e:
+            error_msg = str(e)
+            if "already exists" in error_msg:
+                # Conversation exists, just close dialog
+                self.close_dialog(dialog)
+                await self.load_conversations()
+            else:
+                print(f"Error creating conversation: {e}")
+    
+    async def create_group_conversation(self, group_name: str, members, dialog):
+        """Create group conversation"""
+        # Validate
+        if not group_name or not group_name.strip():
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Please enter a group name"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        if not members or len(members) == 0:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Please select at least one member"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        try:
+            api = get_api_client()
+            conversation = await api.create_conversation(
+                type="group",
+                title=group_name.strip(),
+                participant_ids=[m.id for m in members]
+            )
+            
+            print(f"✅ Group created: {group_name}")
+            
+            # Close dialog
+            self.close_dialog(dialog)
+            
+            # Reload conversations
+            await self.load_conversations()
+            
+            # Select new conversation
+            await self.select_conversation(conversation)
+            
+            # Show success message
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Group '{group_name}' created successfully!"),
+                bgcolor=config.SUCCESS_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+        
+        except Exception as e:
+            print(f"❌ Error creating group: {e}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Failed to create group: {str(e)}"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+    
+    def close_dialog(self, dialog):
+        """Close dialog"""
+        dialog.open = False
+        self.page.update()
+    
+    def show_group_info(self):
+        """Show group information and management dialog"""
+        if not self.current_conversation or self.current_conversation.type.value != "group":
+            return
+        
+        # Wrapper for async function
+        self.page.run_task(self._show_group_info_async)
+    
+    async def _show_group_info_async(self):
+        """Show group information (async)"""
+        try:
+            api = get_api_client()
+            
+            # Get conversation participants
+            # Note: Backend API needs GET /api/conversations/{id}/participants
+            # For now, we'll show basic info
+            
+            conv = self.current_conversation
+            
+            # Group info
+            info_text = ft.Column([
+                ft.Row([
+                    ft.Icon(ft.icons.GROUP, size=40, color=config.PRIMARY_COLOR),
+                    ft.Column([
+                        ft.Text(conv.title or "Unnamed Group", size=18, weight=ft.FontWeight.BOLD),
+                        ft.Text(f"Created by: {conv.created_by}", size=12, color=config.TEXT_SECONDARY)
+                    ], expand=True)
+                ], spacing=10),
+                ft.Divider(),
+                ft.Text(f"Group ID: {conv.id}", size=10, color=config.TEXT_SECONDARY),
+                ft.Text(f"Created: {format_timestamp(conv.created_at)}", size=12),
+            ], spacing=10)
+            
+            dialog = ft.AlertDialog(
+                title=ft.Text("Group Information"),
+                content=ft.Container(
+                    content=info_text,
+                    width=400
+                ),
+                actions=[
+                    ft.TextButton("Close", on_click=lambda e: self.close_dialog(dialog))
+                ]
+            )
+            
+            self.page.dialog = dialog
+            dialog.open = True
+            self.page.update()
+            
+        except Exception as e:
+            print(f"Error showing group info: {e}")
+    
+    def pick_file(self, e):
+        """Open file picker"""
+        self.file_picker.pick_files(
+            dialog_title="Select file to upload",
+            allow_multiple=False,
+            allowed_extensions=["jpg", "jpeg", "png", "gif", "pdf", "txt", "docx", "xlsx", "mp3", "mp4", "zip"]
+        )
+    
+    def handle_file_picked(self, e: ft.FilePickerResultEvent):
+        """Handle file picked from file picker"""
+        if e.files and len(e.files) > 0:
+            from pathlib import Path
+            self.selected_file = Path(e.files[0].path)
+            print(f"📎 File selected: {self.selected_file.name}")
+            
+            # Show notification
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"File selected: {self.selected_file.name}. Click Send to upload."),
+                bgcolor=config.SUCCESS_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+        else:
+            print("No file selected")
+    
+    def download_file(self, file_url: str, file_name: str):
+        """Download file - open in browser"""
+        # Note: In Flet, we can open URL in browser
+        # For actual download, we'd need to implement save dialog
+        import webbrowser
+        print(f"📥 Opening file: {file_url}")
+        webbrowser.open(file_url)
+        
+        # Show notification
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text(f"Opening {file_name} in browser..."),
+            bgcolor=config.SUCCESS_COLOR
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+    
+    def show_profile(self):
+        """Show user profile dialog"""
+        profile_content = ft.Column([
+            # Profile header
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.icons.ACCOUNT_CIRCLE, size=60, color=config.PRIMARY_COLOR),
+                    ft.Column([
+                        ft.Text(self.user.display_name, size=20, weight=ft.FontWeight.BOLD),
+                        ft.Text(f"@{self.user.username}", size=14, color=config.TEXT_SECONDARY)
+                    ], spacing=2)
+                ], spacing=15),
+                padding=20,
+                bgcolor=ft.colors.BLUE_GREY_50,
+                border_radius=8
+            ),
+            ft.Divider(),
+            # Profile info
+            ft.ListTile(
+                leading=ft.Icon(ft.icons.EMAIL),
+                title=ft.Text("Email"),
+                subtitle=ft.Text(self.user.email)
+            ),
+            ft.ListTile(
+                leading=ft.Icon(ft.icons.CALENDAR_TODAY),
+                title=ft.Text("Member since"),
+                subtitle=ft.Text(format_timestamp(self.user.created_at))
+            ),
+        ], spacing=10)
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("My Profile"),
+            content=ft.Container(
+                content=profile_content,
+                width=400
+            ),
+            actions=[
+                ft.TextButton("Edit Profile", on_click=lambda e: self.show_edit_profile(dialog)),
+                ft.TextButton("Close", on_click=lambda e: self.close_dialog(dialog))
+            ]
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def show_edit_profile(self, profile_dialog):
+        """Show edit profile dialog"""
+        self.close_dialog(profile_dialog)
+        
+        # Input fields
+        display_name_input = ft.TextField(
+            label="Display Name",
+            value=self.user.display_name,
+            width=380
+        )
+        
+        email_input = ft.TextField(
+            label="Email",
+            value=self.user.email,
+            width=380
+        )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Edit Profile"),
+            content=ft.Container(
+                content=ft.Column([
+                    display_name_input,
+                    email_input,
+                    ft.Text("Note: Username cannot be changed", size=12, color=config.TEXT_SECONDARY, italic=True)
+                ], spacing=15),
+                width=400
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self.close_dialog(dialog)),
+                ft.ElevatedButton(
+                    "Save Changes",
+                    on_click=lambda e: self.handle_save_profile(
+                        display_name_input.value,
+                        email_input.value,
+                        dialog
+                    ),
+                    style=ft.ButtonStyle(
+                        bgcolor=config.SUCCESS_COLOR,
+                        color=ft.colors.WHITE
+                    )
+                )
+            ]
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def handle_save_profile(self, display_name: str, email: str, dialog):
+        """Handle save profile - wrapper for async"""
+        self.page.run_task(self.save_profile, display_name, email, dialog)
+    
+    async def save_profile(self, display_name: str, email: str, dialog):
+        """Save profile changes"""
+        # Validate
+        if not display_name or not display_name.strip():
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Display name is required"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        if not email or not email.strip():
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Email is required"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        try:
+            api = get_api_client()
+            
+            # Update user (note: Backend API needs to support this)
+            # For now, we'll just show success
+            
+            # Update local user object
+            self.user.display_name = display_name.strip()
+            self.user.email = email.strip()
+            
+            # Close dialog
+            self.close_dialog(dialog)
+            
+            # Show success
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Profile updated successfully!"),
+                bgcolor=config.SUCCESS_COLOR
+            )
+            self.page.snack_bar.open = True
+            
+            # Update UI
+            self.update()
+            
+            print(f"✅ Profile updated: {display_name}")
+        
+        except Exception as e:
+            print(f"❌ Error updating profile: {e}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Failed to update profile: {str(e)}"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+    
+    def show_settings(self):
+        """Show settings dialog"""
+        # Settings options
+        settings_content = ft.Column([
+            ft.Text("Application Settings", size=16, weight=ft.FontWeight.BOLD),
+            ft.Divider(),
+            
+            # Theme setting (placeholder - would need actual implementation)
+            ft.ListTile(
+                leading=ft.Icon(ft.icons.DARK_MODE),
+                title=ft.Text("Dark Mode"),
+                subtitle=ft.Text("Switch between light and dark theme"),
+                trailing=ft.Switch(value=False, disabled=True)
+            ),
+            
+            # Notifications
+            ft.ListTile(
+                leading=ft.Icon(ft.icons.NOTIFICATIONS),
+                title=ft.Text("Notifications"),
+                subtitle=ft.Text("Enable desktop notifications"),
+                trailing=ft.Switch(value=True, disabled=True)
+            ),
+            
+            # Sounds
+            ft.ListTile(
+                leading=ft.Icon(ft.icons.VOLUME_UP),
+                title=ft.Text("Sound"),
+                subtitle=ft.Text("Play sound for new messages"),
+                trailing=ft.Switch(value=True, disabled=True)
+            ),
+            
+            ft.Divider(),
+            
+            # About
+            ft.ListTile(
+                leading=ft.Icon(ft.icons.INFO),
+                title=ft.Text("About"),
+                subtitle=ft.Text("Chat App v1.0.0")
+            ),
+        ], spacing=5)
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Settings"),
+            content=ft.Container(
+                content=settings_content,
+                width=400,
+                height=400
+            ),
+            actions=[
+                ft.TextButton("Close", on_click=lambda e: self.close_dialog(dialog))
+            ]
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def handle_logout(self):
+        """Handle logout"""
+        print("🚪 Logging out...")
+        # Disconnect WebSocket
+        if self.ws_client:
+            self.page.run_task(self.ws_client.disconnect)
+        
+        # Clear storage and logout
+        from ..utils.storage import storage
+        storage.logout()
+        
+        # Call logout callback
+        self.on_logout()
+

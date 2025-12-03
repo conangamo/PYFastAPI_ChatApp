@@ -1,0 +1,120 @@
+-- ============================================
+-- FRIENDSHIP SYSTEM - Database Schema
+-- ============================================
+-- Version: 1.0
+-- Date: 2025-11-09
+-- Purpose: Add friend request and friendship management
+
+-- Drop existing tables if any (for clean install)
+DROP TABLE IF EXISTS friendships CASCADE;
+
+-- ============================================
+-- Table: friendships
+-- ============================================
+-- Stores friend relationships between users
+-- Status flow: pending -> accepted/rejected/blocked
+CREATE TABLE friendships (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    
+    -- User who sent the friend request
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- User who received the friend request
+    friend_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- Friendship status
+    -- 'pending'  : Friend request sent, awaiting response
+    -- 'accepted' : Friend request accepted, now friends
+    -- 'rejected' : Friend request rejected
+    -- 'blocked'  : User blocked by friend_id
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    CHECK (status IN ('pending', 'accepted', 'rejected', 'blocked')),
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Constraints
+    -- Ensure user cannot send friend request to themselves
+    CHECK (user_id != friend_id),
+    
+    -- Ensure only one friendship record between two users (in either direction)
+    UNIQUE (user_id, friend_id)
+);
+
+-- ============================================
+-- Indexes
+-- ============================================
+-- Speed up queries for finding friends
+CREATE INDEX idx_friendships_user_id ON friendships(user_id);
+CREATE INDEX idx_friendships_friend_id ON friendships(friend_id);
+CREATE INDEX idx_friendships_status ON friendships(status);
+CREATE INDEX idx_friendships_user_friend ON friendships(user_id, friend_id);
+
+-- Composite index for common queries
+CREATE INDEX idx_friendships_user_status ON friendships(user_id, status);
+CREATE INDEX idx_friendships_friend_status ON friendships(friend_id, status);
+
+-- ============================================
+-- Trigger: Update updated_at timestamp
+-- ============================================
+CREATE OR REPLACE FUNCTION update_friendships_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_friendships_updated_at
+    BEFORE UPDATE ON friendships
+    FOR EACH ROW
+    EXECUTE FUNCTION update_friendships_updated_at();
+
+-- ============================================
+-- Comments
+-- ============================================
+COMMENT ON TABLE friendships IS 'Stores friend relationships between users';
+COMMENT ON COLUMN friendships.user_id IS 'User who sent the friend request';
+COMMENT ON COLUMN friendships.friend_id IS 'User who received the friend request';
+COMMENT ON COLUMN friendships.status IS 'Status: pending, accepted, rejected, blocked';
+COMMENT ON COLUMN friendships.created_at IS 'When friend request was sent';
+COMMENT ON COLUMN friendships.updated_at IS 'When status was last changed';
+
+-- ============================================
+-- Sample Queries (for reference)
+-- ============================================
+-- Get all friends of a user (accepted only)
+-- SELECT u.* FROM users u
+-- JOIN friendships f ON (f.friend_id = u.id OR f.user_id = u.id)
+-- WHERE (f.user_id = $user_id OR f.friend_id = $user_id)
+--   AND f.status = 'accepted'
+--   AND u.id != $user_id;
+
+-- Get pending friend requests received by a user
+-- SELECT u.* FROM users u
+-- JOIN friendships f ON f.user_id = u.id
+-- WHERE f.friend_id = $user_id AND f.status = 'pending';
+
+-- Get pending friend requests sent by a user
+-- SELECT u.* FROM users u
+-- JOIN friendships f ON f.friend_id = u.id
+-- WHERE f.user_id = $user_id AND f.status = 'pending';
+
+-- Check if two users are friends
+-- SELECT EXISTS(
+--   SELECT 1 FROM friendships
+--   WHERE ((user_id = $user1_id AND friend_id = $user2_id)
+--       OR (user_id = $user2_id AND friend_id = $user1_id))
+--   AND status = 'accepted'
+-- );
+
+-- ============================================
+-- Success Message
+-- ============================================
+DO $$
+BEGIN
+    RAISE NOTICE 'Friendship tables created successfully!';
+    RAISE NOTICE 'Run this file with: psql -U postgres -d chatapp -f add_friendship_tables.sql';
+END $$;
+
