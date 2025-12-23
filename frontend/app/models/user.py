@@ -1,14 +1,9 @@
-"""
-User model
-"""
 from dataclasses import dataclass
 from typing import Optional
-from datetime import datetime
 
 
 @dataclass
 class User:
-    """User data model"""
     id: str
     username: str
     email: str
@@ -19,7 +14,6 @@ class User:
     
     @classmethod
     def from_dict(cls, data: dict) -> "User":
-        """Create User from dictionary"""
         return cls(
             id=data["id"],
             username=data["username"],
@@ -31,7 +25,6 @@ class User:
         )
     
     def to_dict(self) -> dict:
-        """Convert User to dictionary"""
         return {
             "id": self.id,
             "username": self.username,

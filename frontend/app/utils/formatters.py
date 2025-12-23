@@ -1,28 +1,11 @@
-"""
-Formatting utilities
-"""
 from datetime import datetime
 from typing import Optional
 
 
 def format_timestamp(timestamp: str, include_date: bool = False) -> str:
-    """
-    Format ISO timestamp to readable format
-    
-    Args:
-        timestamp: ISO format timestamp
-        include_date: Whether to include date
-        
-    Returns:
-        Formatted string like "10:30 AM" or "Oct 19, 10:30 AM"
-    """
     try:
         dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-        
-        # Convert to local time
         local_dt = dt.astimezone()
-        
-        # Check if today
         now = datetime.now()
         is_today = (local_dt.date() == now.date())
         
@@ -31,7 +14,6 @@ def format_timestamp(timestamp: str, include_date: bool = False) -> str:
         elif is_today:
             return local_dt.strftime("Today, %I:%M %p")
         else:
-            # Check if this year
             is_this_year = (local_dt.year == now.year)
             if is_this_year:
                 return local_dt.strftime("%b %d, %I:%M %p")
@@ -43,15 +25,6 @@ def format_timestamp(timestamp: str, include_date: bool = False) -> str:
 
 
 def format_file_size(size_bytes: int) -> str:
-    """
-    Format file size in bytes to readable format
-    
-    Args:
-        size_bytes: File size in bytes
-        
-    Returns:
-        Formatted string like "1.5 MB" or "350 KB"
-    """
     if size_bytes < 1024:
         return f"{size_bytes} B"
     elif size_bytes < 1024 * 1024:
@@ -66,31 +39,12 @@ def format_file_size(size_bytes: int) -> str:
 
 
 def truncate_text(text: str, max_length: int = 50) -> str:
-    """
-    Truncate text to max length
-    
-    Args:
-        text: Text to truncate
-        max_length: Maximum length
-        
-    Returns:
-        Truncated text with "..." if needed
-    """
     if len(text) <= max_length:
         return text
     return text[:max_length - 3] + "..."
 
 
 def get_file_icon(file_type: Optional[str]) -> str:
-    """
-    Get emoji icon for file type
-    
-    Args:
-        file_type: MIME type or file extension
-        
-    Returns:
-        Emoji icon
-    """
     if not file_type:
         return "📄"
     

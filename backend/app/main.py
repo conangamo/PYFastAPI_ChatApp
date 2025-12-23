@@ -11,7 +11,7 @@ from .core.file_utils import init_upload_directories
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Backend server starting...")
-    print(f"PI Documentation: http://localhost:8000/docs")
+    print(f"API Documentation: http://localhost:8000/docs")
     print(f"Environment: {'DEBUG' if settings.DEBUG else 'PRODUCTION'}")
     
     init_upload_directories()
