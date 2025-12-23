@@ -1,8 +1,3 @@
-"""
-Friendship Model
-Represents friend relationships between users
-"""
-
 from sqlalchemy import Column, String, DateTime, CheckConstraint, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
@@ -12,15 +7,6 @@ from .base import Base
 
 
 class Friendship(Base):
-    """
-    Friendship model for managing friend relationships
-    
-    Status flow:
-    - pending: Friend request sent, awaiting response
-    - accepted: Friends
-    - rejected: Request rejected
-    - blocked: User blocked
-    """
     __tablename__ = "friendships"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
