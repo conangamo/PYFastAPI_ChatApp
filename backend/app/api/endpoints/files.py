@@ -1,6 +1,3 @@
-"""
-File upload and download endpoints
-"""
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,30 +28,8 @@ async def upload_file(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Upload a file (image, document, audio, video, or other)
-    
-    - **file**: The file to upload (multipart/form-data)
-    
-    **Supported file types:**
-    - Images: JPG, PNG, GIF, WEBP, BMP (max 10MB)
-    - Documents: PDF, DOC, DOCX, XLS, XLSX, TXT, CSV (max 20MB)
-    - Audio: MP3, WAV, OGG, WEBM (max 50MB)
-    - Video: MP4, MPEG, MOV, AVI, WEBM (max 100MB)
-    - Archives: ZIP, RAR, 7Z (max 50MB)
-    
-    **Returns:**
-    - file_url: URL to download the file
-    - file_name: Original filename
-    - file_type: MIME type
-    - file_size: Size in bytes
-    - file_category: Category (image/document/audio/video/other)
-    - thumbnail_url: Thumbnail URL (only for images)
-    """
-    # Read file content type
     content_type = file.content_type or "application/octet-stream"
     
-    # Validate file type
     is_valid, error_msg, category = validate_file_type(file.filename, content_type)
     if not is_valid:
         raise HTTPException(
@@ -62,10 +37,7 @@ async def upload_file(
             detail=error_msg
         )
     
-    # Generate unique filename
     unique_filename = generate_unique_filename(file.filename)
-    
-    # Get storage path
     storage_path = get_storage_path(category, unique_filename)
     
     # Save file
@@ -77,23 +49,17 @@ async def upload_file(
             detail=f"Failed to save file: {str(e)}"
         )
     
-    # Validate file size
     is_valid_size, size_error = validate_file_size(file_size, category)
     if not is_valid_size:
-        # Delete the uploaded file
         storage_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=size_error
         )
     
-    # Detect actual MIME type from file content
     actual_mime = detect_mime_type(storage_path)
-    
-    # Generate file URL
     file_url = f"/api/files/download/{category.value}s/{unique_filename}"
     
-    # Generate thumbnail for images
     thumbnail_url = None
     if category == FileCategory.IMAGE:
         thumb_path = generate_thumbnail(storage_path)

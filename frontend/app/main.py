@@ -34,7 +34,7 @@ class ChatApp:
                 print(f"Found {stats['count']} voice recordings ({stats['total_size_mb']} MB)")
                 deleted = cleanup_old_recordings(max_age_hours=24)
                 if deleted > 0:
-                    print(f"🧹 Cleaned up {deleted} old recording(s)")
+                    print(f"Cleaned up {deleted} old recording(s)")
         except Exception as e:
             print(f"Cleanup failed: {e}")
         
@@ -42,7 +42,7 @@ class ChatApp:
         print(f"Token found: {bool(token)}")
         
         if token:
-            print("Trying to restore session 🔄 ...")
+            print("Trying to restore session...")
             self.api_client.set_token(token)
             self.page.run_task(self.try_restore_session)
         else:
@@ -51,12 +51,12 @@ class ChatApp:
     
     async def try_restore_session(self):
         self.show_loading("Restoring session...")
-
+ 
         try:
-            print("Verifying token with backend 🔍 ...")
+            print("Verifying token with backend...")
             user = await self.api_client.get_current_user()
             
-            print(f"Token valid! User: {user.username} ✅")
+            print(f"Token valid! User: {user.username}")
             self.show_main_screen(storage.get_token(), user)
         
         except Exception as e:
@@ -66,7 +66,7 @@ class ChatApp:
             self.show_login_screen()
     
     def show_loading(self, message: str):
-        print(f"⏳ Loading: {message}")
+        print(f"Loading: {message}")
         self.page.controls.clear()
         self.page.add(
             ft.Container(

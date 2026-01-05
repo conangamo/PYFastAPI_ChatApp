@@ -162,5 +162,5 @@ def init_upload_directories():
     thumbnails_dir = UPLOAD_DIR / "thumbnails"
     thumbnails_dir.mkdir(parents=True, exist_ok=True)
     
-    print(f"✅ Upload directories initialized at {UPLOAD_DIR}")
+    print(f"Upload directories initialized at {UPLOAD_DIR}")
 

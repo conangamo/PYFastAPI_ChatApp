@@ -1,8 +1,3 @@
-"""
-Friendship API Endpoints
-Handles friend requests, accepting/rejecting, and friend list management
-"""
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, func
@@ -30,10 +25,6 @@ async def send_friend_request(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Send a friend request to another user
-    """
-    # Check if trying to add self as friend
     if request.friend_id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -49,7 +40,6 @@ async def send_friend_request(
             detail="User not found"
         )
     
-    # Check if friendship already exists (in either direction)
     result = await db.execute(
         select(Friendship).where(
             or_(
@@ -104,10 +94,8 @@ async def respond_to_friend_request(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Accept, reject, or block a friend request
-    Only the recipient of the request can respond
-    """
+    # Accept, reject, or block a friend request
+    # Only the recipient of the request can respond
     # Get friendship record
     result = await db.execute(
         select(Friendship).where(Friendship.id == response.friendship_id)
@@ -120,14 +108,12 @@ async def respond_to_friend_request(
             detail="Friend request not found"
         )
     
-    # Check if current user is the recipient
     if friendship.friend_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only respond to friend requests sent to you"
         )
     
-    # Check if request is pending
     if friendship.status != "pending":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -147,9 +133,6 @@ async def get_received_friend_requests(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get all pending friend requests received by current user
-    """
     result = await db.execute(
         select(Friendship, User)
         .join(User, Friendship.user_id == User.id)
@@ -184,9 +167,6 @@ async def get_sent_friend_requests(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get all pending friend requests sent by current user
-    """
     result = await db.execute(
         select(Friendship, User)
         .join(User, Friendship.friend_id == User.id)
@@ -221,10 +201,6 @@ async def get_friends_list(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get all accepted friends of current user
-    """
-    # Get friendships where current user is either sender or receiver and status is accepted
     result = await db.execute(
         select(Friendship, User)
         .join(
@@ -270,10 +246,6 @@ async def check_friendship_status(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Check friendship status between current user and another user
-    """
-    # Check if friendship exists (in either direction)
     result = await db.execute(
         select(Friendship).where(
             or_(
@@ -342,23 +314,18 @@ async def search_users_for_friends(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Search for users to add as friends
-    Returns users with their friendship status
-    """
     if len(query) < 2:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Search query must be at least 2 characters"
         )
     
-    # Search users by username or display name
     search_pattern = f"%{query}%"
     result = await db.execute(
         select(User)
         .where(
             and_(
-                User.id != current_user.id,  # Exclude current user
+                User.id != current_user.id,
                 or_(
                     User.username.ilike(search_pattern),
                     User.display_name.ilike(search_pattern)
@@ -369,10 +336,8 @@ async def search_users_for_friends(
     )
     users = result.scalars().all()
     
-    # Get friendship status for each user
     user_results = []
     for user in users:
-        # Check friendship status
         friendship_result = await db.execute(
             select(Friendship).where(
                 or_(

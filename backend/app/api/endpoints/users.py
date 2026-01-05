@@ -1,6 +1,3 @@
-"""
-User endpoints: get users, get current user, update user
-"""
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -19,11 +16,6 @@ router = APIRouter()
 async def get_current_user_info(
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Get current user information
-    
-    Requires authentication
-    """
     return current_user
 
 
@@ -33,15 +25,6 @@ async def update_current_user(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Update current user information
-    
-    - **display_name**: New display name (optional)
-    - **email**: New email (optional)
-    
-    Requires authentication
-    """
-    # Update fields if provided
     if user_update.display_name is not None:
         current_user.display_name = user_update.display_name
     
@@ -72,14 +55,6 @@ async def get_users(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get list of users
-    
-    - **skip**: Number of users to skip (pagination)
-    - **limit**: Maximum number of users to return
-    
-    Requires authentication
-    """
     result = await db.execute(
         select(User)
         .where(User.is_active == True)
@@ -96,11 +71,6 @@ async def get_user_by_id(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get user by ID
-    
-    Requires authentication
-    """
     result = await db.execute(
         select(User).where(User.id == user_id)
     )

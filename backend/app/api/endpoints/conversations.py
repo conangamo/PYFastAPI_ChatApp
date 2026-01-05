@@ -181,11 +181,10 @@ async def create_conversation(
     for participant in conversation.participants:
         manager.add_user_to_conversation(participant.user_id, conversation.id)
     
-    # Send to each participant (including creator)
-    logger.info(f"🔔 Broadcasting NEW_CONVERSATION to {len(conversation.participants)} participants")
+    logger.info(f"Broadcasting NEW_CONVERSATION to {len(conversation.participants)} participants")
     for participant in conversation.participants:
         try:
-            logger.info(f"📤 Sending NEW_CONVERSATION to user {participant.user_id}")
+            logger.info(f"Sending NEW_CONVERSATION to user {participant.user_id}")
             ws_message = WSMessage(
                 type=WSMessageType.NEW_CONVERSATION,
                 data={
@@ -193,19 +192,17 @@ async def create_conversation(
                 },
                 timestamp=datetime.utcnow()
             )
-            # Use send_to_user which will log if user is not connected
-            # Log the message being sent
-            logger.info(f"📤 Message to send: type={ws_message.type}, data keys={list(ws_message.data.keys())}")
-            logger.info(f"📤 Conversation data in message: {'conversation' in ws_message.data}")
+            logger.info(f"Message to send: type={ws_message.type}, data keys={list(ws_message.data.keys())}")
+            logger.info(f"Conversation data in message: {'conversation' in ws_message.data}")
             
             await manager.send_to_user(ws_message, participant.user_id)
-            logger.info(f"✅ NEW_CONVERSATION sent to user {participant.user_id}")
+            logger.info(f"NEW_CONVERSATION sent to user {participant.user_id}")
         except Exception as e:
-            logger.error(f"❌ Error sending NEW_CONVERSATION to user {participant.user_id}: {e}")
+            logger.error(f"Error sending NEW_CONVERSATION to user {participant.user_id}: {e}")
             import traceback
             logger.error(traceback.format_exc())
     
-    logger.info(f"🎉 Broadcast complete for conversation {conversation.id}")
+    logger.info(f"Broadcast complete for conversation {conversation.id}")
     
     return conversation_response
 

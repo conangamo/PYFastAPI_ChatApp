@@ -1,6 +1,4 @@
-"""
-WebSocket message schemas
-"""
+
 from pydantic import BaseModel, Field
 from typing import Optional, Any, Dict
 from datetime import datetime
@@ -36,6 +34,20 @@ class WSMessageType(str, Enum):
     ERROR = "error"
     PING = "ping"
     PONG = "pong"
+    
+    # Video Call
+    CALL_INVITE = "call_invite"
+    CALL_INVITE_SENT = "call_invite_sent"
+    CALL_INCOMING = "call_incoming"
+    CALL_ACCEPT = "call_accept"
+    CALL_ACCEPTED = "call_accepted"
+    CALL_ACCEPT_OK = "call_accept_ok"
+    CALL_REJECT = "call_reject"
+    CALL_END = "call_end"
+    CALL_ENDED = "call_ended"
+    SDP_OFFER = "sdp_offer"
+    SDP_ANSWER = "sdp_answer"
+    ICE_CANDIDATE = "ice_candidate"
 
 
 class WSMessage(BaseModel):
@@ -135,4 +147,93 @@ class WSReactionRemoved(BaseModel):
     message_id: UUID
     user_id: UUID
     emoji: str
+
+
+# Video Call Models
+class WSCallInvite(BaseModel):
+    """Call invite message"""
+    call_id: str
+    caller_id: UUID
+    callee_id: UUID
+    conversation_id: UUID
+
+
+class WSCallInviteSent(BaseModel):
+    """Call invite sent confirmation"""
+    call_id: str
+    callee_id: UUID
+    conversation_id: UUID
+
+
+class WSCallIncoming(BaseModel):
+    """Incoming call notification"""
+    call_id: str
+    caller_id: UUID
+    caller_username: str
+    caller_display_name: str
+    conversation_id: UUID
+
+
+class WSCallAccept(BaseModel):
+    """Call accept message"""
+    call_id: str
+    caller_id: UUID
+    callee_id: UUID
+
+
+class WSCallAccepted(BaseModel):
+    """Call accepted notification"""
+    call_id: str
+    callee_id: UUID
+    callee_username: str
+    callee_display_name: str
+
+
+class WSCallReject(BaseModel):
+    """Call reject message"""
+    call_id: str
+    caller_id: UUID
+    callee_id: UUID
+    reason: Optional[str] = None
+
+
+class WSCallEnd(BaseModel):
+    """Call end message"""
+    call_id: str
+    ended_by: UUID
+
+
+class WSCallEnded(BaseModel):
+    """Call ended notification"""
+    call_id: str
+    ended_by: UUID
+    reason: Optional[str] = None
+
+
+class WSSDPOffer(BaseModel):
+    """SDP offer message"""
+    call_id: str
+    from_user_id: UUID
+    to_user_id: UUID
+    sdp: str
+    sdp_type: str = "offer"
+
+
+class WSSDPAnswer(BaseModel):
+    """SDP answer message"""
+    call_id: str
+    from_user_id: UUID
+    to_user_id: UUID
+    sdp: str
+    sdp_type: str = "answer"
+
+
+class WSICECandidate(BaseModel):
+    """ICE candidate message"""
+    call_id: str
+    from_user_id: UUID
+    to_user_id: UUID
+    candidate: str
+    sdp_mid: Optional[str] = None
+    sdp_mline_index: Optional[int] = None
 

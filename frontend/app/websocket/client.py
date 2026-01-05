@@ -17,6 +17,7 @@ class WebSocketClient:
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self.connected = False
         self.message_callbacks: list[Callable] = []
+        self.call_callbacks: list[Callable] = []  # Callbacks for video call messages
         self.listen_task: Optional[asyncio.Task] = None
     
     def add_message_callback(self, callback: Callable[[Dict[str, Any]], None]):
@@ -25,6 +26,15 @@ class WebSocketClient:
     def remove_message_callback(self, callback: Callable):
         if callback in self.message_callbacks:
             self.message_callbacks.remove(callback)
+    
+    def add_call_callback(self, callback: Callable[[Dict[str, Any]], None]):
+        """Add callback for video call messages"""
+        self.call_callbacks.append(callback)
+    
+    def remove_call_callback(self, callback: Callable):
+        """Remove callback for video call messages"""
+        if callback in self.call_callbacks:
+            self.call_callbacks.remove(callback)
     
     async def connect(self):
         """Connect to WebSocket server"""
@@ -51,12 +61,12 @@ class WebSocketClient:
             logger.info(f"Connecting to WebSocket: {config.WS_ENDPOINT}")
             self.ws = await websockets.connect(self.url)
             self.connected = True
-            logger.info("✅ WebSocket connected!")
+            logger.info("WebSocket connected!")
             
             self.listen_task = asyncio.create_task(self._listen())
-            logger.info("✅ Listen task started")
+            logger.info("Listen task started")
         except Exception as e:
-            logger.error(f"❌ WebSocket connection error: {e}")
+            logger.error(f"WebSocket connection error: {e}")
             import traceback
             logger.error(traceback.format_exc())
             self.connected = False
@@ -80,7 +90,7 @@ class WebSocketClient:
                 logger.warning(f"Error closing WebSocket: {e}")
             self.ws = None
         
-        logger.info("✅ WebSocket disconnected")
+        logger.info("WebSocket disconnected")
     
     async def _listen(self):
         try:
@@ -90,19 +100,34 @@ class WebSocketClient:
                     data = json.loads(message)
                     
                     msg_type = data.get('type', 'unknown')
-                    logger.info(f"📥 WebSocket RAW message received: type={msg_type}")
-                    logger.info(f"📥 Full message data: {json.dumps(data, indent=2, default=str)}")
+                    logger.info(f"WebSocket RAW message received: type={msg_type}")
+                    logger.info(f"Full message data: {json.dumps(data, indent=2, default=str)}")
                     
-                    for callback in self.message_callbacks:
-                        try:
-                            callback(data)
-                        except Exception as e:
-                            logger.error(f"❌ Error in message callback: {e}")
-                            import traceback
-                            logger.error(traceback.format_exc())
+                    call_message_types = [
+                        'call_invite_sent', 'call_incoming', 'call_accepted', 
+                        'call_reject', 'call_ended', 'sdp_offer', 'sdp_answer', 
+                        'ice_candidate'
+                    ]
+                    
+                    if msg_type in call_message_types:
+                        for callback in self.call_callbacks:
+                            try:
+                                callback(data)
+                            except Exception as e:
+                                logger.error(f"Error in call callback: {e}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                    else:
+                        for callback in self.message_callbacks:
+                            try:
+                                callback(data)
+                            except Exception as e:
+                                logger.error(f"Error in message callback: {e}")
+                                import traceback
+                                logger.error(traceback.format_exc())
                 
                 except websockets.exceptions.ConnectionClosed:
-                    logger.warning("⚠️⚠️⚠️ WebSocket connection closed!")
+                    logger.warning("WebSocket connection closed!")
                     self.connected = False
                     break
                 except json.JSONDecodeError as e:
@@ -146,6 +171,65 @@ class WebSocketClient:
     
     async def send_ping(self):
         await self.send("ping", {})
+    
+    async def send_call_invite(self, call_id: str, caller_id: str, callee_id: str, conversation_id: str):
+        await self.send("call_invite", {
+            "call_id": call_id,
+            "caller_id": caller_id,
+            "callee_id": callee_id,
+            "conversation_id": conversation_id
+        })
+    
+    async def send_call_accept(self, call_id: str, caller_id: str, callee_id: str):
+        await self.send("call_accept", {
+            "call_id": call_id,
+            "caller_id": caller_id,
+            "callee_id": callee_id
+        })
+    
+    async def send_call_reject(self, call_id: str, caller_id: str, callee_id: str, reason: Optional[str] = None):
+        await self.send("call_reject", {
+            "call_id": call_id,
+            "caller_id": caller_id,
+            "callee_id": callee_id,
+            "reason": reason
+        })
+    
+    async def send_call_end(self, call_id: str, ended_by: str):
+        await self.send("call_end", {
+            "call_id": call_id,
+            "ended_by": ended_by
+        })
+    
+    async def send_sdp_offer(self, call_id: str, from_user_id: str, to_user_id: str, sdp: str):
+        await self.send("sdp_offer", {
+            "call_id": call_id,
+            "from_user_id": from_user_id,
+            "to_user_id": to_user_id,
+            "sdp": sdp,
+            "sdp_type": "offer"
+        })
+    
+    async def send_sdp_answer(self, call_id: str, from_user_id: str, to_user_id: str, sdp: str):
+        await self.send("sdp_answer", {
+            "call_id": call_id,
+            "from_user_id": from_user_id,
+            "to_user_id": to_user_id,
+            "sdp": sdp,
+            "sdp_type": "answer"
+        })
+    
+    async def send_ice_candidate(self, call_id: str, from_user_id: str, to_user_id: str, 
+                                 candidate: str, sdp_mid: Optional[str] = None, 
+                                 sdp_mline_index: Optional[int] = None):
+        await self.send("ice_candidate", {
+            "call_id": call_id,
+            "from_user_id": from_user_id,
+            "to_user_id": to_user_id,
+            "candidate": candidate,
+            "sdp_mid": sdp_mid,
+            "sdp_mline_index": sdp_mline_index
+        })
 
 
 ws_client: Optional[WebSocketClient] = None

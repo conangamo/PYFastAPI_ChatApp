@@ -1,7 +1,6 @@
-"""
-Main chat screen (Simplified MVP)
-"""
 import flet as ft
+import uuid
+import asyncio
 from typing import Optional, List
 from pathlib import Path
 
@@ -11,6 +10,7 @@ from ..websocket.client import WebSocketClient
 from ..utils.formatters import format_timestamp, truncate_text
 from ..config import config
 from ..components import MessageBubble, ConversationItem, MessageInput, TypingIndicator
+from ..pages.video_call_page import VideoCallPage
 from ..dialogs import (
     ProfileDialog,
     EditProfileDialog,
@@ -30,21 +30,7 @@ from ..dialogs import (
 
 
 class MainChatScreen(ft.UserControl):
-    """
-    Main chat screen with sidebar and chat area
-    Simplified version with core functionality
-    """
-    
     def __init__(self, page: ft.Page, user: User, token: str, on_logout):
-        """
-        Initialize main chat screen
-        
-        Args:
-            page: Flet page
-            user: Current user
-            token: Auth token
-            on_logout: Callback for logout
-        """
         super().__init__()
         self.expand = True  # Fill entire page
         self.page = page
@@ -61,6 +47,13 @@ class MainChatScreen(ft.UserControl):
         
         # WebSocket
         self.ws_client: Optional[WebSocketClient] = None
+        
+        # Video Call State
+        self.current_call_id: Optional[str] = None
+        self.current_call_page: Optional[VideoCallPage] = None
+        self.call_timeout_timer: Optional[ft.Timer] = None
+        self.incoming_call_dialog: Optional[ft.AlertDialog] = None
+        self.call_ringtone: Optional[ft.Audio] = None
         
         # UI Components
         self.conversation_list_view = ft.ListView(spacing=5, padding=10, auto_scroll=True)
@@ -98,54 +91,41 @@ class MainChatScreen(ft.UserControl):
         )
         
         # Initialize data on startup
-        print("🎨 MainChatScreen initialized")
+        print("MainChatScreen initialized")
     
     def did_mount(self):
-        """Called when component is mounted - start async tasks"""
-        print("📱 MainChatScreen mounted, loading data...")
+        print("MainChatScreen mounted, loading data...")
         self.page.run_task(self.initialize_screen)
     
     async def initialize_screen(self):
         """Initialize screen with data"""
-        print("🔄 Loading conversations, friends and connecting websocket...")
+        print("Loading conversations, friends and connecting websocket...")
         await self.load_conversations()
         await self.load_friends()
         await self.load_pending_requests_count()
         await self.connect_websocket()
-        
-        # Start periodic conversation refresh to catch any missed events
-        # This is a fallback mechanism in case WebSocket events are missed
         self.page.run_task(self._periodic_refresh_conversations)
         
-        print("✅ Screen initialization complete")
+        print("Screen initialization complete")
     
     async def _periodic_refresh_conversations(self):
         """Periodically refresh conversations to catch any missed WebSocket events"""
         import asyncio
         while True:
             try:
-                # Wait 30 seconds before first refresh, then every 60 seconds
                 await asyncio.sleep(30)
-                
-                # Check if control is still attached to page
                 if not self.page:
-                    print("⚠️ Page not available, stopping periodic refresh")
                     break
-                
-                print("🔄 Periodic refresh: Reloading conversations...")
                 await self.load_conversations()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"❌ Error in periodic refresh: {e}")
                 import traceback
                 traceback.print_exc()
-                # Continue even if there's an error
                 await asyncio.sleep(60)
     
     def build(self):
-        """Build main screen UI"""
-        print("🎨 Building main screen UI...")
+        print("Building main screen UI...")
         
         # Sidebar with conversations
         sidebar = ft.Container(
@@ -288,8 +268,6 @@ class MainChatScreen(ft.UserControl):
             spacing=0,
             vertical_alignment=ft.CrossAxisAlignment.START
         )
-        print(f"✅ Main UI built: sidebar width={sidebar.width}, controls={len(main_row.controls)}")
-        
         # Wrap in container to ensure proper sizing
         return ft.Container(
             content=main_row,
@@ -310,11 +288,9 @@ class MainChatScreen(ft.UserControl):
     async def load_conversations(self):
         """Load user's conversations"""
         try:
-            print("📋 Loading conversations from API...")
-            
-            # Check if control is attached to page before updating
+            print("Loading conversations from API...")
+
             if not self.page:
-                print("⚠️ Page not available, skipping UI update")
                 return
             
             if hasattr(self, 'status_text') and self.status_text:
@@ -326,23 +302,17 @@ class MainChatScreen(ft.UserControl):
             api.set_token(self.token)
             new_conversations = await api.get_conversations()
             
-            print(f"✅ Loaded {len(new_conversations)} conversations from API")
-            
-            # Update conversations list
             self.conversations = new_conversations
             
-            # Update UI only if page is available
             if self.page:
                 self.render_conversations()
                 
                 if hasattr(self, 'status_text') and self.status_text:
                     self.status_text.value = f"{len(self.conversations)} conversations"
                 self.update()
-            
-            print(f"✅ Conversations list updated and rendered")
         
         except Exception as e:
-            print(f"❌ Error loading conversations: {e}")
+            print(f"Error loading conversations: {e}")
             import traceback
             traceback.print_exc()
             # Only update UI if page is available
@@ -352,7 +322,6 @@ class MainChatScreen(ft.UserControl):
     
     def render_conversations(self):
         """Render conversations list"""
-        print(f"🎨 Rendering {len(self.conversations)} conversations...")
         self.conversation_list_view.controls.clear()
         
         if not self.conversations:
@@ -386,7 +355,7 @@ class MainChatScreen(ft.UserControl):
     async def load_friends(self):
         """Load friends list"""
         try:
-            print("👥 Loading friends from API...")
+            print("Loading friends from API...")
             
             api = get_api_client()
             api.set_token(self.token)
@@ -394,23 +363,22 @@ class MainChatScreen(ft.UserControl):
             
             if response.status_code == 200:
                 self.friends = response.json()
-                print(f"✅ Loaded {len(self.friends)} friends")
+                print(f"Loaded {len(self.friends)} friends")
                 
                 # Render friends
                 self.render_friends()
             else:
-                print(f"❌ Error loading friends: {response.status_code}")
+                print(f"Error loading friends: {response.status_code}")
                 self.friends = []
                 self.render_friends()
         
         except Exception as e:
-            print(f"❌ Error loading friends: {e}")
+            print(f"Error loading friends: {e}")
             self.friends = []
             self.render_friends()
     
     def render_friends(self):
         """Render friends list"""
-        print(f"🎨 Rendering {len(self.friends)} friends...")
         self.friends_list_view.controls.clear()
         
         if not self.friends:
@@ -485,8 +453,6 @@ class MainChatScreen(ft.UserControl):
             friend_username = friend.get("username")
             friend_name = friend.get("display_name", friend_username)
             
-            print(f"💬 Starting chat with {friend_username}...")
-            
             # Check if conversation already exists
             existing_conv = None
             for conv in self.conversations:
@@ -499,11 +465,9 @@ class MainChatScreen(ft.UserControl):
             
             if existing_conv:
                 # Open existing conversation
-                print(f"📂 Opening existing conversation with {friend_username}")
+                print(f"Opening existing conversation with {friend_username}")
                 await self.select_conversation(existing_conv)
             else:
-                # Create new conversation
-                print(f"➕ Creating new conversation with {friend_username}")
                 api = get_api_client()
                 api.set_token(self.token)
                 
@@ -558,7 +522,6 @@ class MainChatScreen(ft.UserControl):
     
     async def select_conversation(self, conv: Conversation):
         """Select and load conversation"""
-        print(f"📂 Selecting conversation: {conv.get_display_name(self.user.id)}")
         self.current_conversation = conv
         self.chat_header.value = conv.get_display_name(self.user.id)
         
@@ -584,9 +547,19 @@ class MainChatScreen(ft.UserControl):
                 ], spacing=5)
             ]
         else:
+            # Direct chat: Add video call button
+            video_call_button = ft.IconButton(
+                icon=ft.icons.VIDEOCAM,
+                tooltip="Video Call",
+                icon_color=config.PRIMARY_COLOR,
+                on_click=lambda e: self.page.run_task(self._start_video_call)
+            )
             self.chat_header_row.controls = [
                 self.chat_header,
-                settings_button
+                ft.Row([
+                    video_call_button,
+                    settings_button
+                ], spacing=5)
             ]
         
         # Refresh conversation list to show selection
@@ -598,16 +571,16 @@ class MainChatScreen(ft.UserControl):
     async def load_messages(self):
         """Load messages for current conversation"""
         if not self.current_conversation:
-            print("⚠️ load_messages: No current conversation selected")
+            print("load_messages: No current conversation selected")
             return
         
         try:
-            print(f"📥 Loading messages for conversation: {self.current_conversation.id}")
+            print(f"Loading messages for conversation: {self.current_conversation.id}")
             api = get_api_client()
             api.set_token(self.token)
             messages = await api.get_messages(self.current_conversation.id)
             
-            print(f"✅ Loaded {len(messages)} messages from API")
+            print(f"Loaded {len(messages)} messages from API")
             
             # Sort messages by created_at (oldest first)
             self.messages = sorted(messages, key=lambda m: m.created_at)
@@ -618,9 +591,8 @@ class MainChatScreen(ft.UserControl):
                 if str(msg.sender_id) != str(self.user.id) and not msg.read_at:
                     try:
                         await api.put(f"/messages/{msg.id}/read")
-                        print(f"✅ Marked message {msg.id} as read")
                     except Exception as e:
-                        print(f"⚠️ Failed to mark message as read: {e}")
+                        pass
             
             # Load reactions for each message
             for msg in self.messages:
@@ -637,7 +609,7 @@ class MainChatScreen(ft.UserControl):
                     
                     msg.reactions = reactions_dict
                 except Exception as e:
-                    print(f"⚠️ Failed to load reactions for message {msg.id}: {e}")
+                    pass
                     msg.reactions = {}
             
             # Render messages
@@ -659,9 +631,8 @@ class MainChatScreen(ft.UserControl):
                     duration=300,
                     curve=ft.AnimationCurve.EASE_OUT
                 )
-                print(f"✅ Scrolled to bottom")
-        except Exception as e:
-            print(f"⚠️ Error scrolling to bottom: {e}")
+            except Exception as e:
+                pass
     
     def render_messages(self):
         """Render messages in chat"""
@@ -742,13 +713,12 @@ class MainChatScreen(ft.UserControl):
                 file_type = upload_result.get("file_type")
                 file_name = upload_result.get("file_name")
                 
-                print(f"✅ File uploaded: {file_name}")
                 
                 # Hide progress
                 self.message_input_widget.hide_upload_progress()
                 
             except Exception as e:
-                print(f"❌ Error uploading file: {e}")
+                print(f"Error uploading file: {e}")
                 self.message_input_widget.hide_upload_progress()
                 
                 self.page.snack_bar = ft.SnackBar(
@@ -788,113 +758,58 @@ class MainChatScreen(ft.UserControl):
     async def connect_websocket(self):
         """Connect to WebSocket for real-time updates"""
         try:
-            print("🔌 Connecting to WebSocket...")
+            print("Connecting to WebSocket...")
             self.ws_client = WebSocketClient(self.token)
             self.ws_client.add_message_callback(self.handle_ws_message)
+            self.ws_client.add_call_callback(self.handle_call_message)
             
             await self.ws_client.connect()
             
-            print("✅ WebSocket connected!")
             if hasattr(self, 'status_text') and self.status_text:
-                self.status_text.value = "🟢 Connected"
+                self.status_text.value = "Connected"
             
-            # After connecting, reload conversations to catch any missed events
-            # This ensures we have the latest conversations even if we missed WebSocket events
-            print("🔄 Reloading conversations after WebSocket connection...")
             await self.load_conversations()
             
             if self.page:
                 self.update()
         
         except Exception as e:
-            print(f"❌ WebSocket connection error: {e}")
+            print(f"WebSocket connection error: {e}")
             import traceback
             traceback.print_exc()
             if hasattr(self, 'status_text') and self.status_text:
-                self.status_text.value = "🔴 Offline"
+                self.status_text.value = "Offline"
             if self.page:
                 self.update()
     
     def handle_ws_message(self, data: dict):
         """Handle incoming WebSocket message"""
         try:
-            print(f"🔔🔔🔔 WebSocket message received: {data}")  # DEBUG - EXTRA LOGGING
+            print(f"WebSocket message received: {data}")
             
             msg_type = data.get("type")
             msg_data = data.get("data", {})
             
-            print(f"📬 Message type: {msg_type}")
-            print(f"📬 Message data type: {type(msg_data)}")
-            print(f"📬 Message data: {msg_data}")
-            print(f"📬 Message data keys: {list(msg_data.keys()) if isinstance(msg_data, dict) else 'not a dict'}")
-            
-            # Handle case where data might be nested differently
             if not msg_data and "conversation" in data:
-                print(f"⚠️ No msg_data but 'conversation' in data, using data as msg_data")
                 msg_data = data
             
             if msg_type == "new_message":
-                # New message received
                 message_id = msg_data.get("message_id")
                 conversation_id = msg_data.get("conversation_id")
                 sender_id = msg_data.get("sender_id")
                 
-                print(f"📨 NEW MESSAGE EVENT:")
-                print(f"   - Conversation ID: {conversation_id}")
-                print(f"   - Sender ID: {sender_id}")
-                print(f"   - Current conversation: {self.current_conversation.id if self.current_conversation else None}")
-                print(f"   - Current user: {self.user.id}")
-                
-                # Check if conversation exists in our list
                 conv_exists = any(str(c.id) == str(conversation_id) for c in self.conversations)
                 
                 if not conv_exists:
-                    # Conversation not in list - might be a new conversation we haven't received yet
-                    print(f"⚠️ Conversation {conversation_id} not in list, fetching from API...")
-                    # Fetch conversation from API and add to list
                     self.page.run_task(self._fetch_and_add_conversation, str(conversation_id))
-                    
-                    # Also reload all conversations to ensure we have the latest
-                    print(f"🔄 Also reloading all conversations to ensure sync...")
                     self.page.run_task(self.load_conversations)
                 
-                # FIX: Always reload messages for current conversation if it matches
-                # This ensures real-time updates in both 1-1 and group chats
                 if self.current_conversation:
                     conv_match = str(conversation_id) == str(self.current_conversation.id)
                     
-                    # Check if message is from current user
-                    is_from_me = False
-                    if sender_id:
-                        # Compare as strings to handle UUID/string differences
-                        is_from_me = str(sender_id) == str(self.user.id)
-                    
-                    print(f"   - Conversation match: {conv_match}")
-                    print(f"   - Is from me: {is_from_me}")
-                    print(f"   - Sender ID: {sender_id}, Current user ID: {self.user.id}")
-                    
                     if conv_match:
-                        # Always reload if it's for current conversation
-                        # This ensures we see messages from others AND our own messages (for sync)
-                        print(f"✅✅✅ Reloading messages for conversation {conversation_id}")
-                        print(f"   - Message from: {sender_id}")
-                        print(f"   - Is from me: {is_from_me}")
-                        # Reload messages to get the new one
-                        # Use run_task to ensure it runs in the correct context
                         self.page.run_task(self.load_messages)
-                    else:
-                        print(f"⚠️⚠️⚠️ Skipping reload: conversation doesn't match!")
-                        print(f"   - Current conversation ID: {self.current_conversation.id}")
-                        print(f"   - Message conversation ID: {conversation_id}")
-                        print(f"   - Current conversation ID (str): {str(self.current_conversation.id)}")
-                        print(f"   - Message conversation ID (str): {str(conversation_id)}")
-                else:
-                    print(f"⚠️⚠️⚠️ No current conversation selected!")
-                    print(f"   - Message is for conversation: {conversation_id}")
-                    print(f"   - Available conversations: {[str(c.id) for c in self.conversations]}")
                 
-                # Always update conversation list (new last message)
-                print(f"🔄 Reloading conversations list")
                 self.page.run_task(self.load_conversations)
             
             elif msg_type == "typing":
@@ -930,12 +845,11 @@ class MainChatScreen(ft.UserControl):
                 conversation_id = msg_data.get("conversation_id")
                 new_content = msg_data.get("content")
                 
-                print(f"✏️ MESSAGE EDITED EVENT: {message_id}")
+                print(f"MESSAGE EDITED EVENT: {message_id}")
                 
                 # If it's for current conversation, reload messages
                 if (self.current_conversation and 
                     str(conversation_id) == str(self.current_conversation.id)):
-                    print(f"🔄 Reloading messages to show edit")
                     self.page.run_task(self.load_messages)
                 
                 # Update conversation list (in case edited message was last message)
@@ -946,12 +860,11 @@ class MainChatScreen(ft.UserControl):
                 message_id = msg_data.get("message_id")
                 conversation_id = msg_data.get("conversation_id")
                 
-                print(f"🗑️ MESSAGE DELETED EVENT: {message_id}")
+                print(f"MESSAGE DELETED EVENT: {message_id}")
                 
                 # If it's for current conversation, reload messages
                 if (self.current_conversation and 
                     str(conversation_id) == str(self.current_conversation.id)):
-                    print(f"🔄 Reloading messages to show deletion")
                     self.page.run_task(self.load_messages)
                 
                 # Update conversation list
@@ -973,9 +886,8 @@ class MainChatScreen(ft.UserControl):
                         try:
                             msg.read_at = datetime.fromisoformat(read_at_str.replace("Z", "+00:00"))
                             msg.read_by_user_id = read_by_user_id
-                            print(f"✅ Updated message {message_id} read status")
                         except Exception as e:
-                            print(f"❌ Error parsing read_at: {e}")
+                            pass
                         break
                 
                 # Update UI to show new status
@@ -991,14 +903,13 @@ class MainChatScreen(ft.UserControl):
                 username = msg_data.get("username")
                 user_id = msg_data.get("user_id")
                 
-                print(f"👍 REACTION ADDED: {emoji} by {username} on {message_id}")
+                print(f"REACTION ADDED: {emoji} by {username} on {message_id}")
                 print(f"   - Conversation ID: {conversation_id}")
                 print(f"   - Current conversation: {self.current_conversation.id if self.current_conversation else None}")
                 
                 # Check if it's for current conversation
                 if (self.current_conversation and 
                     str(conversation_id) == str(self.current_conversation.id)):
-                    print(f"✅ Conversation matches, updating reaction...")
                     
                     # Try to update reaction in local messages list first
                     reaction_updated = False
@@ -1024,21 +935,17 @@ class MainChatScreen(ft.UserControl):
                                     "username": username
                                 })
                                 reaction_updated = True
-                                print(f"✅ Updated reaction in local message: {emoji} by {username}")
-                            else:
-                                print(f"⚠️ User already reacted with {emoji}")
                             break
                     
                     # If reaction was updated locally, re-render messages
                     if reaction_updated:
-                        print(f"🔄 Re-rendering messages to show updated reaction")
+                        print(f"Re-rendering messages to show updated reaction")
                         self.render_messages()
                     else:
-                        # If not found in local list, reload from API
-                        print(f"⚠️ Message not found in local list, reloading from API...")
+                        print(f"Message not found in local list, reloading from API...")
                         self.page.run_task(self.load_messages)
                 else:
-                    print(f"⚠️ Conversation doesn't match, skipping reaction update")
+                    print(f"Conversation doesn't match, skipping reaction update")
             
             elif msg_type == "reaction_removed":
                 # Reaction was removed
@@ -1047,14 +954,13 @@ class MainChatScreen(ft.UserControl):
                 emoji = msg_data.get("emoji")
                 user_id = msg_data.get("user_id")
                 
-                print(f"👎 REACTION REMOVED: {emoji} from {message_id}")
+                print(f"REACTION REMOVED: {emoji} from {message_id}")
                 print(f"   - Conversation ID: {conversation_id}")
                 print(f"   - Current conversation: {self.current_conversation.id if self.current_conversation else None}")
                 
                 # Check if it's for current conversation
                 if (self.current_conversation and 
                     str(conversation_id) == str(self.current_conversation.id)):
-                    print(f"✅ Conversation matches, updating reaction removal...")
                     
                     # Try to update reaction in local messages list first
                     reaction_updated = False
@@ -1079,83 +985,40 @@ class MainChatScreen(ft.UserControl):
                                 
                                 if len(msg.reactions[emoji]) < original_count:
                                     reaction_updated = True
-                                    print(f"✅ Removed reaction from local message: {emoji}")
                             break
                     
-                    # If reaction was updated locally, re-render messages
                     if reaction_updated:
-                        print(f"🔄 Re-rendering messages to show updated reaction")
                         self.render_messages()
                     else:
-                        # If not found in local list, reload from API
-                        print(f"⚠️ Message not found in local list, reloading from API...")
                         self.page.run_task(self.load_messages)
-                else:
-                    print(f"⚠️ Conversation doesn't match, skipping reaction removal update")
             
             elif msg_type == "new_conversation":
-                # New conversation created (e.g., group chat or direct chat)
-                print(f"🆕🆕🆕 NEW CONVERSATION EVENT received!")
-                print(f"   - Full data: {data}")
-                print(f"   - msg_data type: {type(msg_data)}")
-                print(f"   - msg_data: {msg_data}")
-                
-                # Try to get conversation data from different possible locations
                 conversation_data = None
                 if isinstance(msg_data, dict):
                     if "conversation" in msg_data:
                         conversation_data = msg_data.get("conversation")
-                        print(f"   - ✅ Found conversation in msg_data")
                     elif "conversation" in data:
                         conversation_data = data.get("conversation")
-                        print(f"   - ✅ Found conversation in data")
-                
-                print(f"   - conversation_data type: {type(conversation_data)}")
-                print(f"   - conversation_data: {conversation_data}")
                 
                 if conversation_data:
-                    # Add conversation to list immediately (don't wait for reload)
                     try:
-                        print(f"   - Parsing conversation data...")
                         new_conv = Conversation.from_dict(conversation_data)
-                        print(f"   - ✅ Parsed conversation successfully!")
-                        print(f"      - ID: {new_conv.id}")
-                        print(f"      - Type: {new_conv.type.value}")
-                        print(f"      - Title: {new_conv.title}")
-                        print(f"      - Participants: {len(new_conv.participants)}")
-                        
-                        # Check if conversation already exists in list
                         exists = any(str(c.id) == str(new_conv.id) for c in self.conversations)
-                        print(f"   - Conversation exists in list: {exists}")
                         
                         if not exists:
-                            print(f"✅✅✅ Adding new conversation to list: {new_conv.id}")
-                            # Add to beginning of list (most recent)
                             self.conversations.insert(0, new_conv)
-                            print(f"   - Added to list, now have {len(self.conversations)} conversations")
-                            # Re-render conversations list
                             self.render_conversations()
-                            print(f"✅✅✅ Conversation added and rendered!")
                         else:
-                            print(f"⚠️ Conversation already in list, reloading to update")
-                            # Reload to get updated data
                             self.page.run_task(self.load_conversations)
                     except Exception as e:
-                        print(f"❌❌❌ Error processing new conversation: {e}")
                         import traceback
                         traceback.print_exc()
-                        # Fallback: reload conversations
-                        print(f"🔄 Falling back to reload conversations...")
                         self.page.run_task(self.load_conversations)
                 else:
-                    # No conversation data, just reload
-                    print(f"⚠️⚠️⚠️ No conversation data in event, reloading conversations list")
-                    print(f"   - Full event data: {data}")
-                    print(f"   - msg_data keys: {list(msg_data.keys()) if isinstance(msg_data, dict) else 'not a dict'}")
                     self.page.run_task(self.load_conversations)
         
         except Exception as e:
-            print(f"❌ Error in handle_ws_message: {e}")
+            print(f"Error in handle_ws_message: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1169,12 +1032,12 @@ class MainChatScreen(ft.UserControl):
             
             if len(self.typing_users) == 1:
                 username = list(self.typing_users)[0]
-                self.typing_indicator.value = f"📝 {username} is typing..."
+                self.typing_indicator.value = f"{username} is typing..."
             elif len(self.typing_users) == 2:
                 users = list(self.typing_users)
-                self.typing_indicator.value = f"📝 {users[0]} and {users[1]} are typing..."
+                self.typing_indicator.value = f"{users[0]} and {users[1]} are typing..."
             else:
-                self.typing_indicator.value = f"📝 {len(self.typing_users)} people are typing..."
+                self.typing_indicator.value = f"{len(self.typing_users)} people are typing..."
         
         self.page.update()
     
@@ -1352,7 +1215,6 @@ class MainChatScreen(ft.UserControl):
                 participant_ids=member_ids
             )
             
-            print(f"✅ Group created: {group_name}")
             
             # Close dialog
             if self.page.dialog:
@@ -1373,7 +1235,7 @@ class MainChatScreen(ft.UserControl):
             self.page.update()
         
         except Exception as e:
-            print(f"❌ Error creating group: {e}")
+            print(f"Error creating group: {e}")
             raise
     
     def close_dialog(self, dialog):
@@ -1471,30 +1333,28 @@ class MainChatScreen(ft.UserControl):
     async def _fetch_and_add_conversation(self, conversation_id: str):
         """Fetch conversation from API and add to list if not exists"""
         try:
-            print(f"🔍 Fetching conversation {conversation_id} from API...")
+            print(f"Fetching conversation {conversation_id} from API...")
             api = get_api_client()
             api.set_token(self.token)
             conv = await api.get_conversation(conversation_id)
-            print(f"✅ Fetched conversation: {conv.id}, type: {conv.type.value}")
             
             # Check if already exists
             exists = any(str(c.id) == str(conv.id) for c in self.conversations)
             print(f"   - Conversation exists in list: {exists}")
             
             if not exists:
-                print(f"✅✅✅ Adding conversation {conversation_id} to list")
+                print(f"Adding conversation {conversation_id} to list")
                 self.conversations.insert(0, conv)
                 print(f"   - Added to list, now have {len(self.conversations)} conversations")
                 self.render_conversations()
-                print(f"✅✅✅ Conversation added and rendered!")
+                print(f"Conversation added and rendered!")
             else:
-                print(f"⚠️ Conversation already exists, skipping add")
+                print(f"Conversation already exists, skipping add")
         except Exception as e:
-            print(f"❌ Error fetching conversation {conversation_id}: {e}")
+            print(f"Error fetching conversation {conversation_id}: {e}")
             import traceback
             traceback.print_exc()
-            # Fallback: reload all conversations
-            print(f"🔄 Falling back to reload all conversations...")
+            print(f"Falling back to reload all conversations...")
             await self.load_conversations()
     
     def download_file(self, file_url: str, file_name: str):
@@ -1502,7 +1362,7 @@ class MainChatScreen(ft.UserControl):
         # Note: In Flet, we can open URL in browser
         # For actual download, we'd need to implement save dialog
         import webbrowser
-        print(f"📥 Opening file: {file_url}")
+        print(f"Opening file: {file_url}")
         webbrowser.open(file_url)
         
         # Show notification
@@ -1523,9 +1383,7 @@ class MainChatScreen(ft.UserControl):
             )
             self.page.snack_bar.open = True
             self.page.update()
-            print(f"📋 Copied message: {message.id}")
         except Exception as e:
-            print(f"❌ Error copying message: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text("Failed to copy message"),
                 bgcolor=config.ERROR_COLOR
@@ -1543,7 +1401,7 @@ class MainChatScreen(ft.UserControl):
                 # Call API to update message
                 response = await api.put(f"/messages/{message_id}", json={"content": new_content})
                 
-                print(f"✏️ Message edited: {message_id}")
+                print(f"Message edited: {message_id}")
                 
                 # Show success message
                 self.page.snack_bar = ft.SnackBar(
@@ -1557,7 +1415,7 @@ class MainChatScreen(ft.UserControl):
                 await self.load_messages()
                 
             except Exception as e:
-                print(f"❌ Error editing message: {e}")
+                print(f"Error editing message: {e}")
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"Failed to edit message: {str(e)}"),
                     bgcolor=config.ERROR_COLOR
@@ -1583,7 +1441,7 @@ class MainChatScreen(ft.UserControl):
                 # Call API to delete message
                 await api.delete(f"/messages/{message_id}")
                 
-                print(f"🗑️ Message deleted: {message_id}")
+                print(f"Message deleted: {message_id}")
                 
                 # Show success message
                 self.page.snack_bar = ft.SnackBar(
@@ -1597,7 +1455,7 @@ class MainChatScreen(ft.UserControl):
                 await self.load_messages()
                 
             except Exception as e:
-                print(f"❌ Error deleting message: {e}")
+                print(f"Error deleting message: {e}")
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"Failed to delete message: {str(e)}"),
                     bgcolor=config.ERROR_COLOR
@@ -1623,17 +1481,17 @@ class MainChatScreen(ft.UserControl):
                 if is_my_reaction:
                     # Remove reaction
                     await api.delete(f"/messages/{message.id}/reactions/{emoji}")
-                    print(f"✅ Removed reaction {emoji}")
+                    print(f"Removed reaction {emoji}")
                 else:
                     # Add reaction
                     await api.post(f"/messages/{message.id}/reactions", json={"emoji": emoji})
-                    print(f"✅ Added reaction {emoji}")
+                    print(f"Added reaction {emoji}")
                 
                 # Reload messages to show update
                 await self.load_messages()
                 
             except Exception as e:
-                print(f"❌ Error toggling reaction: {e}")
+                print(f"Error toggling reaction: {e}")
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"Failed to react: {str(e)}"),
                     bgcolor=config.ERROR_COLOR
@@ -1664,13 +1522,13 @@ class MainChatScreen(ft.UserControl):
             api.set_token(self.token)
             
             await api.post(f"/messages/{message_id}/reactions", json={"emoji": emoji})
-            print(f"✅ Added reaction {emoji}")
+            print(f"Added reaction {emoji}")
             
             # Reload messages
             await self.load_messages()
             
         except Exception as e:
-            print(f"❌ Error adding reaction: {e}")
+            print(f"Error adding reaction: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"Failed to add reaction: {str(e)}"),
                 bgcolor=config.ERROR_COLOR
@@ -1705,10 +1563,9 @@ class MainChatScreen(ft.UserControl):
                 self.page.snack_bar.open = True
                 self.page.update()
                 
-                print(f"✅ Profile updated: {full_name}")
                 
             except Exception as ex:
-                print(f"❌ Error updating profile: {ex}")
+                print(f"Error updating profile: {ex}")
                 raise
         
         dialog = EditProfileDialog(
@@ -1747,7 +1604,7 @@ class MainChatScreen(ft.UserControl):
                     self.friend_requests_badge.visible = False
                 
                 self.update()
-                print(f"📬 Pending friend requests: {self.pending_requests_count}")
+                print(f"Pending friend requests: {self.pending_requests_count}")
         
         except Exception as e:
             print(f"Error loading pending requests count: {e}")
@@ -1784,9 +1641,467 @@ class MainChatScreen(ft.UserControl):
         # Reload pending requests count
         self.page.run_task(self.load_pending_requests_count)
     
+    # ========== Video Call Methods ==========
+    
+    async def _start_video_call(self):
+        """Start a video call with current conversation participant"""
+        if not self.current_conversation:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Please select a conversation first"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        if self.current_conversation.type.value != "direct":
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Video calls are only available for direct chats"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        # Check if already in a call
+        if self.current_call_id:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("You are already in a call"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        try:
+            # Get remote user from conversation
+            remote_user = None
+            for participant in self.current_conversation.participants:
+                if str(participant.user_id) != str(self.user.id):
+                    remote_user = participant
+                    break
+            
+            if not remote_user:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Could not find conversation participant"),
+                    bgcolor=config.ERROR_COLOR
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Generate call ID
+            call_id = str(uuid.uuid4())
+            self.current_call_id = call_id
+            
+            # Send call invite
+            await self.ws_client.send_call_invite(
+                call_id=call_id,
+                caller_id=str(self.user.id),
+                callee_id=str(remote_user.user_id),
+                conversation_id=str(self.current_conversation.id)
+            )
+            
+            # Show calling overlay
+            self._show_calling_overlay(remote_user.display_name or remote_user.username)
+            
+            # Setup timeout timer (30 seconds)
+            self.call_timeout_timer = ft.Timer(
+                interval=30000,  # 30 seconds
+                callback=lambda e: self.page.run_task(self._handle_call_timeout),
+                repeat=False
+            )
+            self.call_timeout_timer.start()
+            
+        except Exception as e:
+            print(f"Error starting video call: {e}")
+            import traceback
+            traceback.print_exc()
+            self.current_call_id = None
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Failed to start call: {str(e)}"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+    
+    def _show_calling_overlay(self, remote_username: str):
+        """Show calling overlay while waiting for answer"""
+        # Create overlay dialog
+        calling_dialog = ft.AlertDialog(
+            title=ft.Text("Calling..."),
+            content=ft.Column([
+                ft.Text(f"Calling {remote_username}...", size=16),
+                ft.ProgressRing()
+            ], tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            actions=[
+                ft.TextButton(
+                    text="Cancel",
+                    on_click=lambda e: self.page.run_task(self._cancel_call)
+                )
+            ],
+            modal=True
+        )
+        self.page.dialog = calling_dialog
+        calling_dialog.open = True
+        self.page.update()
+    
+    async def _cancel_call(self):
+        """Cancel outgoing call"""
+        if self.current_call_id and self.ws_client:
+            await self.ws_client.send_call_end(
+                call_id=self.current_call_id,
+                ended_by=str(self.user.id)
+            )
+        
+        self._close_calling_overlay()
+        self.current_call_id = None
+    
+    def _close_calling_overlay(self):
+        """Close calling overlay"""
+        if self.call_timeout_timer:
+            self.call_timeout_timer.cancel()
+            self.call_timeout_timer = None
+        
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.dialog = None
+            self.page.update()
+    
+    def handle_call_message(self, data: dict):
+        """Handle incoming call-related WebSocket messages"""
+        try:
+            msg_type = data.get("type")
+            msg_data = data.get("data", {})
+            
+            
+            if msg_type == "call_invite_sent":
+                call_id = msg_data.get("call_id")
+            
+            elif msg_type == "call_incoming":
+                # Incoming call
+                call_id = msg_data.get("call_id")
+                caller_id = msg_data.get("caller_id")
+                caller_username = msg_data.get("caller_username", "Unknown")
+                caller_display_name = msg_data.get("caller_display_name", caller_username)
+                
+                # Check if already in a call
+                if self.current_call_id:
+                    # Reject automatically (busy)
+                    self.page.run_task(
+                        self._reject_incoming_call,
+                        call_id,
+                        caller_id,
+                        "busy"
+                    )
+                    return
+                
+                self.current_call_id = call_id
+                self._show_incoming_call_dialog(call_id, caller_id, caller_display_name)
+            
+            elif msg_type == "call_accepted":
+                # Call was accepted by callee
+                call_id = msg_data.get("call_id")
+                callee_username = msg_data.get("callee_username", "Unknown")
+                
+                if call_id == self.current_call_id:
+                    self._close_calling_overlay()
+                    # Open video call page
+                    self.page.run_task(self._open_video_call_page, call_id, True)
+            
+            elif msg_type == "call_reject":
+                # Call was rejected
+                call_id = msg_data.get("call_id")
+                reason = msg_data.get("reason", "rejected")
+                
+                if call_id == self.current_call_id:
+                    self._close_calling_overlay()
+                    self.current_call_id = None
+                    
+                    reason_text = "User is busy" if reason == "busy" else "Call was rejected"
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(reason_text),
+                        bgcolor=config.ERROR_COLOR
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+            
+            elif msg_type == "call_ended":
+                # Call ended
+                call_id = msg_data.get("call_id")
+                
+                if call_id == self.current_call_id:
+                    self._close_video_call_page()
+                    self.current_call_id = None
+                    
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("Call ended"),
+                        bgcolor=config.TEXT_SECONDARY
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+            
+            elif msg_type in ["sdp_offer", "sdp_answer", "ice_candidate"]:
+                # Forward to video call page if open
+                if self.current_call_page:
+                    if msg_type == "sdp_offer":
+                        self.page.run_task(
+                            self.current_call_page.handle_sdp_offer,
+                            msg_data.get("sdp")
+                        )
+                    elif msg_type == "sdp_answer":
+                        self.page.run_task(
+                            self.current_call_page.handle_sdp_answer,
+                            msg_data.get("sdp")
+                        )
+                    elif msg_type == "ice_candidate":
+                        self.page.run_task(
+                            self.current_call_page.handle_ice_candidate,
+                            msg_data.get("candidate"),
+                            msg_data.get("sdp_mid"),
+                            msg_data.get("sdp_mline_index")
+                        )
+        
+        except Exception as e:
+            print(f"Error handling call message: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _show_incoming_call_dialog(self, call_id: str, caller_id: str, caller_name: str):
+        """Show incoming call dialog with ringtone"""
+        # Create ringtone (using ft.Audio)
+        # Note: You may need to add a ringtone file to your assets
+        try:
+            # Try to play ringtone (if you have a sound file)
+            # For now, we'll use a simple approach with ft.Audio
+            # You can add a ringtone.wav file to your assets folder
+            self.call_ringtone = ft.Audio(
+                src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",  # Placeholder - replace with actual ringtone
+                autoplay=True,
+                volume=1.0,
+                balance=0.0
+            )
+            # Add to page overlay (if supported)
+            # Note: Flet Audio may need to be added differently
+        except Exception as e:
+            print(f"Could not setup ringtone: {e}")
+            # Continue without ringtone
+        
+        # Create dialog
+        self.incoming_call_dialog = ft.AlertDialog(
+            title=ft.Text("Incoming Video Call"),
+            content=ft.Column([
+                ft.Text(f"{caller_name} is calling...", size=18, weight=ft.FontWeight.BOLD),
+                ft.ProgressRing()
+            ], tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            actions=[
+                ft.ElevatedButton(
+                    text="Accept",
+                    bgcolor=ft.colors.GREEN,
+                    color=ft.colors.WHITE,
+                    on_click=lambda e: self.page.run_task(
+                        self._accept_incoming_call,
+                        call_id,
+                        caller_id
+                    )
+                ),
+                ft.ElevatedButton(
+                    text="Reject",
+                    bgcolor=ft.colors.RED,
+                    color=ft.colors.WHITE,
+                    on_click=lambda e: self.page.run_task(
+                        self._reject_incoming_call,
+                        call_id,
+                        caller_id,
+                        "rejected"
+                    )
+                )
+            ],
+            modal=True
+        )
+        
+        self.page.dialog = self.incoming_call_dialog
+        self.incoming_call_dialog.open = True
+        self.page.update()
+        
+        # Setup timeout (30 seconds)
+        self.call_timeout_timer = ft.Timer(
+            interval=30000,
+            callback=lambda e: self.page.run_task(
+                self._handle_call_timeout
+            ),
+            repeat=False
+        )
+        self.call_timeout_timer.start()
+    
+    async def _accept_incoming_call(self, call_id: str, caller_id: str):
+        """Accept incoming call"""
+        try:
+            # Stop ringtone
+            if self.call_ringtone:
+                # Stop audio if possible
+                self.call_ringtone = None
+            
+            # Close dialog
+            if self.incoming_call_dialog:
+                self.incoming_call_dialog.open = False
+                self.incoming_call_dialog = None
+                self.page.dialog = None
+                self.page.update()
+            
+            # Cancel timeout
+            if self.call_timeout_timer:
+                self.call_timeout_timer.cancel()
+                self.call_timeout_timer = None
+            
+            # Send accept message
+            await self.ws_client.send_call_accept(
+                call_id=call_id,
+                caller_id=caller_id,
+                callee_id=str(self.user.id)
+            )
+            
+            # Open video call page
+            await self._open_video_call_page(call_id, False)
+        
+        except Exception as e:
+            print(f"Error accepting call: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    async def _reject_incoming_call(self, call_id: str, caller_id: str, reason: str):
+        """Reject incoming call"""
+        try:
+            # Stop ringtone
+            if self.call_ringtone:
+                self.call_ringtone = None
+            
+            # Close dialog
+            if self.incoming_call_dialog:
+                self.incoming_call_dialog.open = False
+                self.incoming_call_dialog = None
+                self.page.dialog = None
+                self.page.update()
+            
+            # Cancel timeout
+            if self.call_timeout_timer:
+                self.call_timeout_timer.cancel()
+                self.call_timeout_timer = None
+            
+            # Send reject message
+            await self.ws_client.send_call_reject(
+                call_id=call_id,
+                caller_id=caller_id,
+                callee_id=str(self.user.id),
+                reason=reason
+            )
+            
+            self.current_call_id = None
+        
+        except Exception as e:
+            print(f"Error rejecting call: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    async def _handle_call_timeout(self):
+        """Handle call timeout (30 seconds)"""
+        if self.current_call_id:
+            # End the call
+            await self.ws_client.send_call_end(
+                call_id=self.current_call_id,
+                ended_by=str(self.user.id)
+            )
+        
+        # Stop ringtone
+        if self.call_ringtone:
+            self.call_ringtone = None
+        
+        # Close dialog/overlay
+        self._close_calling_overlay()
+        if self.incoming_call_dialog:
+            self.incoming_call_dialog.open = False
+            self.incoming_call_dialog = None
+            self.page.dialog = None
+            self.page.update()
+        
+        self.current_call_id = None
+        
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text("Call timeout - no answer"),
+            bgcolor=config.ERROR_COLOR
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+    
+    async def _open_video_call_page(self, call_id: str, is_caller: bool):
+        """Open video call page"""
+        try:
+            # Get remote user info
+            remote_user_id = None
+            remote_username = "Unknown"
+            
+            if self.current_conversation:
+                for participant in self.current_conversation.participants:
+                    if str(participant.user_id) != str(self.user.id):
+                        remote_user_id = str(participant.user_id)
+                        remote_username = participant.display_name or participant.username
+                        break
+            
+            if not remote_user_id:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Could not find remote user"),
+                    bgcolor=config.ERROR_COLOR
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Create video call page
+            self.current_call_page = VideoCallPage(
+                page=self.page,
+                call_id=call_id,
+                local_user_id=str(self.user.id),
+                remote_user_id=remote_user_id,
+                remote_username=remote_username,
+                is_caller=is_caller,
+                on_call_end=self._close_video_call_page,
+                ws_client=self.ws_client
+            )
+            
+            # Replace main screen with video call page
+            self.page.controls.clear()
+            self.page.add(self.current_call_page)
+            self.page.update()
+        
+        except Exception as e:
+            print(f"Error opening video call page: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _close_video_call_page(self):
+        """Close video call page and return to main screen"""
+        try:
+            # Cleanup call page
+            if self.current_call_page:
+                self.page.run_task(self.current_call_page._cleanup)
+                self.current_call_page = None
+            
+            # Clear call state
+            self.current_call_id = None
+            
+            # Restore main screen
+            self.page.controls.clear()
+            self.page.add(self)
+            self.page.update()
+        
+        except Exception as e:
+            print(f"Error closing video call page: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def handle_logout(self):
         """Handle logout"""
-        print("🚪 Logging out...")
+        print("Logging out...")
         # Disconnect WebSocket
         if self.ws_client:
             self.page.run_task(self.ws_client.disconnect)

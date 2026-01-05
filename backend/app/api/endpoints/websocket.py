@@ -1,6 +1,3 @@
-"""
-WebSocket endpoint for real-time messaging
-"""
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -22,24 +19,26 @@ from ...schemas.websocket import (
     WSConnected,
     WSError,
     WSUserStatus,
-    WSTypingIndicator
+    WSTypingIndicator,
+    WSCallInvite,
+    WSCallInviteSent,
+    WSCallIncoming,
+    WSCallAccept,
+    WSCallAccepted,
+    WSCallReject,
+    WSCallEnd,
+    WSCallEnded,
+    WSSDPOffer,
+    WSSDPAnswer,
+    WSICECandidate
 )
+from ...websocket.manager import CallSession
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 async def get_user_from_token(token: str, db: AsyncSession) -> Optional[User]:
-    """
-    Validate JWT token and get user
-    
-    Args:
-        token: JWT access token
-        db: Database session
-        
-    Returns:
-        User object if token is valid, None otherwise
-    """
     try:
         # Decode token
         payload = decode_access_token(token)
@@ -50,7 +49,6 @@ async def get_user_from_token(token: str, db: AsyncSession) -> Optional[User]:
         if not user_id:
             return None
         
-        # Get user from database
         result = await db.execute(
             select(User).where(User.id == UUID(user_id), User.is_active == True)
         )
@@ -63,13 +61,6 @@ async def get_user_from_token(token: str, db: AsyncSession) -> Optional[User]:
 
 
 async def load_user_conversations(user_id: UUID, db: AsyncSession):
-    """
-    Load all conversations for a user and register them with the connection manager
-    
-    Args:
-        user_id: User's UUID
-        db: Database session
-    """
     try:
         # Get all conversations user is part of
         result = await db.execute(
@@ -78,7 +69,6 @@ async def load_user_conversations(user_id: UUID, db: AsyncSession):
         )
         conversation_ids = [row[0] for row in result.all()]
         
-        # Register user to all their conversations
         for conv_id in conversation_ids:
             manager.add_user_to_conversation(user_id, conv_id)
         
@@ -93,34 +83,7 @@ async def websocket_endpoint(
     token: str = Query(..., description="JWT access token"),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    WebSocket endpoint for real-time messaging
-    
-    Connection URL: ws://localhost:8000/api/ws?token=YOUR_JWT_TOKEN
-    
-    Message Format (Client -> Server):
-    {
-        "type": "typing",
-        "data": {
-            "conversation_id": "uuid",
-            "is_typing": true
-        }
-    }
-    
-    Message Format (Server -> Client):
-    {
-        "type": "new_message",
-        "data": {
-            "conversation_id": "uuid",
-            "message_id": "uuid",
-            "sender_id": "uuid",
-            "sender_username": "alice",
-            "content": "Hello!",
-            ...
-        },
-        "timestamp": "2025-10-19T..."
-    }
-    """
+
     # Authenticate user
     user = await get_user_from_token(token, db)
     
@@ -136,7 +99,6 @@ async def websocket_endpoint(
     # Load user's conversations
     await load_user_conversations(user.id, db)
     
-    # Send connection success message
     connected_msg = WSMessage(
         type=WSMessageType.CONNECTED,
         data=WSConnected(
@@ -163,22 +125,17 @@ async def websocket_endpoint(
     logger.info(f"User {user.username} ({user.id}) connected via WebSocket")
     
     try:
-        # Listen for messages
         while True:
-            # Receive message from client
             data = await websocket.receive_text()
             
             try:
-                # Parse message
                 message_data = json.loads(data)
                 message_type = message_data.get("type")
                 message_payload = message_data.get("data", {})
                 
                 logger.debug(f"Received WebSocket message from {user.username}: {message_type}")
                 
-                # Handle different message types
                 if message_type == "typing":
-                    # Typing indicator
                     conversation_id = UUID(message_payload.get("conversation_id"))
                     is_typing = message_payload.get("is_typing", False)
                     
@@ -201,7 +158,6 @@ async def websocket_endpoint(
                     )
                 
                 elif message_type == "ping":
-                    # Heartbeat ping
                     pong_msg = WSMessage(
                         type=WSMessageType.PONG,
                         data={"message": "pong"},
@@ -209,8 +165,354 @@ async def websocket_endpoint(
                     )
                     await manager.send_personal_message(pong_msg, user.id)
                 
+                elif message_type == "call_invite":
+                    # Handle call invite
+                    try:
+                        call_invite = WSCallInvite(**message_payload)
+                        call_id = call_invite.call_id
+                        caller_id = call_invite.caller_id
+                        callee_id = call_invite.callee_id
+                        conversation_id = call_invite.conversation_id
+                        
+                        if caller_id != user.id:
+                            raise ValueError("Caller ID does not match authenticated user")
+                        
+                        if not manager.is_user_online(callee_id):
+                            error_msg = WSMessage(
+                                type=WSMessageType.ERROR,
+                                data=WSError(
+                                    message="User is not online",
+                                    code="USER_OFFLINE"
+                                ).model_dump(mode='json'),
+                                timestamp=datetime.utcnow()
+                            )
+                            await manager.send_personal_message(error_msg, user.id)
+                            continue
+                        
+                        # Create call session
+                        call_session = CallSession(
+                            call_id=call_id,
+                            caller_id=caller_id,
+                            callee_id=callee_id,
+                            state="ringing"
+                        )
+                        manager.active_calls[call_id] = call_session
+                        
+                        result = await db.execute(
+                            select(User).where(User.id == caller_id)
+                        )
+                        caller = result.scalar_one_or_none()
+                        
+                        if not caller:
+                            raise ValueError("Caller not found")
+                        
+                        invite_sent_msg = WSMessage(
+                            type=WSMessageType.CALL_INVITE_SENT,
+                            data=WSCallInviteSent(
+                                call_id=call_id,
+                                callee_id=callee_id,
+                                conversation_id=conversation_id
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(invite_sent_msg, caller_id)
+                        
+                        incoming_msg = WSMessage(
+                            type=WSMessageType.CALL_INCOMING,
+                            data=WSCallIncoming(
+                                call_id=call_id,
+                                caller_id=caller_id,
+                                caller_username=caller.username,
+                                caller_display_name=caller.display_name or caller.username,
+                                conversation_id=conversation_id
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(incoming_msg, callee_id)
+                        
+                        logger.info(f"Call invite sent: {call_id} from {caller_id} to {callee_id}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error handling call_invite: {e}")
+                        error_msg = WSMessage(
+                            type=WSMessageType.ERROR,
+                            data=WSError(
+                                message=f"Error processing call invite: {str(e)}",
+                                code="CALL_INVITE_ERROR"
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(error_msg, user.id)
+                
+                elif message_type == "call_accept":
+                    # Handle call accept
+                    try:
+                        call_accept = WSCallAccept(**message_payload)
+                        call_id = call_accept.call_id
+                        caller_id = call_accept.caller_id
+                        callee_id = call_accept.callee_id
+                        
+                        if callee_id != user.id:
+                            raise ValueError("Callee ID does not match authenticated user")
+                        
+                        if call_id not in manager.active_calls:
+                            raise ValueError("Call session not found")
+                        
+                        call_session = manager.active_calls[call_id]
+                        
+                        if call_session.state != "ringing":
+                            raise ValueError(f"Call is not in ringing state: {call_session.state}")
+                        
+                        call_session.state = "active"
+                        
+                        result = await db.execute(
+                            select(User).where(User.id == callee_id)
+                        )
+                        callee = result.scalar_one_or_none()
+                        
+                        if not callee:
+                            raise ValueError("Callee not found")
+                        
+                        accepted_msg = WSMessage(
+                            type=WSMessageType.CALL_ACCEPTED,
+                            data=WSCallAccepted(
+                                call_id=call_id,
+                                callee_id=callee_id,
+                                callee_username=callee.username,
+                                callee_display_name=callee.display_name or callee.username
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(accepted_msg, caller_id)
+                        
+                        logger.info(f"Call accepted: {call_id} by {callee_id}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error handling call_accept: {e}")
+                        error_msg = WSMessage(
+                            type=WSMessageType.ERROR,
+                            data=WSError(
+                                message=f"Error processing call accept: {str(e)}",
+                                code="CALL_ACCEPT_ERROR"
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(error_msg, user.id)
+                
+                elif message_type == "call_reject":
+                    # Handle call reject
+                    try:
+                        call_reject = WSCallReject(**message_payload)
+                        call_id = call_reject.call_id
+                        caller_id = call_reject.caller_id
+                        callee_id = call_reject.callee_id
+                        reason = call_reject.reason
+                        
+                        if callee_id != user.id:
+                            raise ValueError("Callee ID does not match authenticated user")
+                        
+                        reject_msg = WSMessage(
+                            type=WSMessageType.CALL_REJECT,
+                            data=call_reject.model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(reject_msg, caller_id)
+                        
+                        if call_id in manager.active_calls:
+                            call_session = manager.active_calls[call_id]
+                            call_session.state = "rejected"
+                            call_session.ended_at = datetime.utcnow()
+                            del manager.active_calls[call_id]
+                        
+                        logger.info(f"Call rejected: {call_id} by {callee_id}, reason: {reason}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error handling call_reject: {e}")
+                        error_msg = WSMessage(
+                            type=WSMessageType.ERROR,
+                            data=WSError(
+                                message=f"Error processing call reject: {str(e)}",
+                                code="CALL_REJECT_ERROR"
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(error_msg, user.id)
+                
+                elif message_type == "call_end":
+                    # Handle call end
+                    try:
+                        call_end = WSCallEnd(**message_payload)
+                        call_id = call_end.call_id
+                        ended_by = call_end.ended_by
+                        
+                        if call_id not in manager.active_calls:
+                            raise ValueError("Call session not found")
+                        
+                        call_session = manager.active_calls[call_id]
+                        
+                        if ended_by != call_session.caller_id and ended_by != call_session.callee_id:
+                            raise ValueError("User is not part of this call")
+                        
+                        peer_id = call_session.callee_id if ended_by == call_session.caller_id else call_session.caller_id
+                        
+                        call_session.state = "ended"
+                        call_session.ended_at = datetime.utcnow()
+                        
+                        ended_msg = WSMessage(
+                            type=WSMessageType.CALL_ENDED,
+                            data=WSCallEnded(
+                                call_id=call_id,
+                                ended_by=ended_by,
+                                reason=None
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(ended_msg, peer_id)
+                        
+                        del manager.active_calls[call_id]
+                        
+                        logger.info(f"Call ended: {call_id} by {ended_by}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error handling call_end: {e}")
+                        error_msg = WSMessage(
+                            type=WSMessageType.ERROR,
+                            data=WSError(
+                                message=f"Error processing call end: {str(e)}",
+                                code="CALL_END_ERROR"
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(error_msg, user.id)
+                
+                elif message_type == "sdp_offer":
+                    # Handle SDP offer
+                    try:
+                        sdp_offer = WSSDPOffer(**message_payload)
+                        call_id = sdp_offer.call_id
+                        from_user_id = sdp_offer.from_user_id
+                        to_user_id = sdp_offer.to_user_id
+                        
+                        if from_user_id != user.id:
+                            raise ValueError("Sender ID does not match authenticated user")
+                        
+                        # Verify call session exists
+                        if call_id not in manager.active_calls:
+                            raise ValueError("Call session not found")
+                        
+                        call_session = manager.active_calls[call_id]
+                        
+                        if from_user_id not in [call_session.caller_id, call_session.callee_id]:
+                            raise ValueError("Sender is not part of this call")
+                        if to_user_id not in [call_session.caller_id, call_session.callee_id]:
+                            raise ValueError("Recipient is not part of this call")
+                        
+                        offer_msg = WSMessage(
+                            type=WSMessageType.SDP_OFFER,
+                            data=sdp_offer.model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(offer_msg, to_user_id)
+                        
+                        logger.debug(f"SDP offer forwarded: {call_id} from {from_user_id} to {to_user_id}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error handling sdp_offer: {e}")
+                        error_msg = WSMessage(
+                            type=WSMessageType.ERROR,
+                            data=WSError(
+                                message=f"Error processing SDP offer: {str(e)}",
+                                code="SDP_OFFER_ERROR"
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(error_msg, user.id)
+                
+                elif message_type == "sdp_answer":
+                    # Handle SDP answer
+                    try:
+                        sdp_answer = WSSDPAnswer(**message_payload)
+                        call_id = sdp_answer.call_id
+                        from_user_id = sdp_answer.from_user_id
+                        to_user_id = sdp_answer.to_user_id
+                        
+                        if from_user_id != user.id:
+                            raise ValueError("Sender ID does not match authenticated user")
+                        
+                        if call_id not in manager.active_calls:
+                            raise ValueError("Call session not found")
+                        
+                        call_session = manager.active_calls[call_id]
+                        
+                        if from_user_id not in [call_session.caller_id, call_session.callee_id]:
+                            raise ValueError("Sender is not part of this call")
+                        if to_user_id not in [call_session.caller_id, call_session.callee_id]:
+                            raise ValueError("Recipient is not part of this call")
+                        
+                        answer_msg = WSMessage(
+                            type=WSMessageType.SDP_ANSWER,
+                            data=sdp_answer.model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(answer_msg, to_user_id)
+                        
+                        logger.debug(f"SDP answer forwarded: {call_id} from {from_user_id} to {to_user_id}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error handling sdp_answer: {e}")
+                        error_msg = WSMessage(
+                            type=WSMessageType.ERROR,
+                            data=WSError(
+                                message=f"Error processing SDP answer: {str(e)}",
+                                code="SDP_ANSWER_ERROR"
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(error_msg, user.id)
+                
+                elif message_type == "ice_candidate":
+                    # Handle ICE candidate
+                    try:
+                        ice_candidate = WSICECandidate(**message_payload)
+                        call_id = ice_candidate.call_id
+                        from_user_id = ice_candidate.from_user_id
+                        to_user_id = ice_candidate.to_user_id
+                        
+                        if from_user_id != user.id:
+                            raise ValueError("Sender ID does not match authenticated user")
+                        
+                        if call_id not in manager.active_calls:
+                            raise ValueError("Call session not found")
+                        
+                        call_session = manager.active_calls[call_id]
+                        
+                        if from_user_id not in [call_session.caller_id, call_session.callee_id]:
+                            raise ValueError("Sender is not part of this call")
+                        if to_user_id not in [call_session.caller_id, call_session.callee_id]:
+                            raise ValueError("Recipient is not part of this call")
+                        
+                        candidate_msg = WSMessage(
+                            type=WSMessageType.ICE_CANDIDATE,
+                            data=ice_candidate.model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(candidate_msg, to_user_id)
+                        
+                        logger.debug(f"ICE candidate forwarded: {call_id} from {from_user_id} to {to_user_id}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error handling ice_candidate: {e}")
+                        error_msg = WSMessage(
+                            type=WSMessageType.ERROR,
+                            data=WSError(
+                                message=f"Error processing ICE candidate: {str(e)}",
+                                code="ICE_CANDIDATE_ERROR"
+                            ).model_dump(mode='json'),
+                            timestamp=datetime.utcnow()
+                        )
+                        await manager.send_personal_message(error_msg, user.id)
+                
                 else:
-                    # Unknown message type
                     logger.warning(f"Unknown WebSocket message type: {message_type}")
                     error_msg = WSMessage(
                         type=WSMessageType.ERROR,
@@ -248,7 +550,6 @@ async def websocket_endpoint(
                 await manager.send_personal_message(error_msg, user.id)
     
     except WebSocketDisconnect:
-        # Client disconnected
         manager.disconnect(user.id)
         
         # Broadcast user offline status

@@ -1,6 +1,3 @@
-"""
-Message Reaction endpoints
-"""
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
@@ -34,15 +31,6 @@ async def add_reaction(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Add a reaction to a message
-    
-    - **message_id**: Message to react to
-    - **emoji**: Emoji to react with (e.g., 👍, ❤️, 😂)
-    
-    User must be participant in the conversation
-    """
-    # Get message
     result = await db.execute(
         select(Message).where(Message.id == message_id)
     )
@@ -54,7 +42,6 @@ async def add_reaction(
             detail="Message not found"
         )
     
-    # Verify user is participant in conversation
     result = await db.execute(
         select(ConversationParticipant)
         .where(
@@ -70,7 +57,6 @@ async def add_reaction(
             detail="You are not a participant in this conversation"
         )
     
-    # Check if reaction already exists
     result = await db.execute(
         select(MessageReaction)
         .where(
@@ -84,7 +70,6 @@ async def add_reaction(
     existing_reaction = result.scalar_one_or_none()
     
     if existing_reaction:
-        # Return existing reaction
         return ReactionResponse(
             id=existing_reaction.id,
             message_id=existing_reaction.message_id,
@@ -95,7 +80,6 @@ async def add_reaction(
             created_at=existing_reaction.created_at
         )
     
-    # Create new reaction
     new_reaction = MessageReaction(
         message_id=message_id,
         user_id=current_user.id,
@@ -105,7 +89,6 @@ async def add_reaction(
     await db.commit()
     await db.refresh(new_reaction)
     
-    # Broadcast reaction via WebSocket
     ws_message = WSMessage(
         type=WSMessageType.REACTION_ADDED,
         data=WSReactionAdded(
@@ -143,15 +126,6 @@ async def remove_reaction(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Remove a reaction from a message
-    
-    - **message_id**: Message ID
-    - **emoji**: Emoji to remove
-    
-    User can only remove their own reactions
-    """
-    # Get message
     result = await db.execute(
         select(Message).where(Message.id == message_id)
     )
@@ -163,7 +137,6 @@ async def remove_reaction(
             detail="Message not found"
         )
     
-    # Find reaction
     result = await db.execute(
         select(MessageReaction)
         .where(
@@ -213,14 +186,6 @@ async def get_message_reactions(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get all reactions for a message (aggregated by emoji)
-    
-    - **message_id**: Message ID
-    
-    Returns summary with counts and user lists for each emoji
-    """
-    # Get message
     result = await db.execute(
         select(Message).where(Message.id == message_id)
     )
@@ -232,7 +197,6 @@ async def get_message_reactions(
             detail="Message not found"
         )
     
-    # Verify user is participant
     result = await db.execute(
         select(ConversationParticipant)
         .where(
@@ -248,7 +212,6 @@ async def get_message_reactions(
             detail="You are not a participant in this conversation"
         )
     
-    # Get all reactions with user info
     from sqlalchemy.orm import selectinload
     result = await db.execute(
         select(MessageReaction)
@@ -257,7 +220,6 @@ async def get_message_reactions(
     )
     reactions = result.scalars().all()
     
-    # Aggregate by emoji
     emoji_map = defaultdict(lambda: {"count": 0, "users": [], "reacted_by_me": False})
     
     for reaction in reactions:
@@ -271,7 +233,6 @@ async def get_message_reactions(
         if reaction.user_id == current_user.id:
             emoji_data["reacted_by_me"] = True
     
-    # Build summary list
     reaction_summaries = [
         ReactionSummary(
             emoji=emoji,

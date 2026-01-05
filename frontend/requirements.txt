@@ -23,3 +23,8 @@ soundfile==0.12.1       # Save/load audio files
 numpy==1.26.2           # Audio data array processing
 platformdirs==4.1.0     # Cross-platform app directories
 
+# Video Call & WebRTC
+aiortc==1.6.0           # WebRTC implementation for Python
+opencv-python==4.12.0.88 # Computer vision library for video processing (updated for Python 3.13 compatibility)
+audioop-lts             # Required for aiortc on Python 3.13+ (audioop was removed)
+

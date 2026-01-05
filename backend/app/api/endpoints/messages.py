@@ -1,6 +1,3 @@
-"""
-Message endpoints
-"""
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
@@ -26,18 +23,6 @@ async def send_message(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Send a message to a conversation
-    
-    - **conversation_id**: Conversation to send message to
-    - **content**: Message text content
-    - **file_url**: Optional file URL (for images/files)
-    - **file_type**: Optional file MIME type
-    - **file_name**: Optional file name
-    
-    User must be a participant in the conversation
-    """
-    # Verify conversation exists and user is participant
     result = await db.execute(
         select(ConversationParticipant)
         .where(
@@ -64,7 +49,6 @@ async def send_message(
     )
     db.add(new_message)
     
-    # Update conversation updated_at
     result = await db.execute(
         select(Conversation).where(Conversation.id == message_data.conversation_id)
     )
@@ -74,7 +58,6 @@ async def send_message(
     await db.commit()
     await db.refresh(new_message)
     
-    # Broadcast message via WebSocket to all conversation participants
     ws_message = WSMessage(
         type=WSMessageType.NEW_MESSAGE,
         data=WSChatMessage(
@@ -91,11 +74,10 @@ async def send_message(
         timestamp=datetime.utcnow()
     )
     
-    # Broadcast to all participants in the conversation
     await manager.broadcast_to_conversation(
         ws_message,
         message_data.conversation_id,
-        exclude_user_id=None  # Send to everyone including sender for confirmation
+        exclude_user_id=None
     )
     
     # Return message with sender info
