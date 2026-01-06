@@ -10,7 +10,14 @@ from ..websocket.client import WebSocketClient
 from ..utils.formatters import format_timestamp, truncate_text
 from ..config import config
 from ..components import MessageBubble, ConversationItem, MessageInput, TypingIndicator
-from ..pages.video_call_page import VideoCallPage
+# Conditional import for video call page
+try:
+    from ..pages.video_call_page import VideoCallPage
+    VIDEO_CALL_AVAILABLE = True
+except ImportError:
+    VIDEO_CALL_AVAILABLE = False
+    VideoCallPage = None
+
 from ..dialogs import (
     ProfileDialog,
     EditProfileDialog,
@@ -51,7 +58,7 @@ class MainChatScreen(ft.UserControl):
         # Video Call State
         self.current_call_id: Optional[str] = None
         self.current_call_page: Optional[VideoCallPage] = None
-        self.call_timeout_timer: Optional[ft.Timer] = None
+        self.call_timeout_timer_task: Optional[asyncio.Task] = None
         self.incoming_call_dialog: Optional[ft.AlertDialog] = None
         self.call_ringtone: Optional[ft.Audio] = None
         
@@ -631,8 +638,8 @@ class MainChatScreen(ft.UserControl):
                     duration=300,
                     curve=ft.AnimationCurve.EASE_OUT
                 )
-            except Exception as e:
-                pass
+        except Exception as e:
+            pass
     
     def render_messages(self):
         """Render messages in chat"""
@@ -1705,13 +1712,14 @@ class MainChatScreen(ft.UserControl):
             # Show calling overlay
             self._show_calling_overlay(remote_user.display_name or remote_user.username)
             
-            # Setup timeout timer (30 seconds)
-            self.call_timeout_timer = ft.Timer(
-                interval=30000,  # 30 seconds
-                callback=lambda e: self.page.run_task(self._handle_call_timeout),
-                repeat=False
-            )
-            self.call_timeout_timer.start()
+            # Setup timeout timer (30 seconds) using asyncio
+            call_id_for_timeout = call_id  # Capture call_id for closure
+            async def timeout_task():
+                await asyncio.sleep(30)  # Wait 30 seconds
+                if self.current_call_id == call_id_for_timeout:  # Still waiting for this call
+                    await self._handle_call_timeout()
+            
+            self.call_timeout_timer_task = asyncio.create_task(timeout_task())
             
         except Exception as e:
             print(f"Error starting video call: {e}")
@@ -1754,14 +1762,18 @@ class MainChatScreen(ft.UserControl):
                 ended_by=str(self.user.id)
             )
         
-        self._close_calling_overlay()
+        await self._close_calling_overlay()
         self.current_call_id = None
     
-    def _close_calling_overlay(self):
+    async def _close_calling_overlay(self):
         """Close calling overlay"""
-        if self.call_timeout_timer:
-            self.call_timeout_timer.cancel()
-            self.call_timeout_timer = None
+        if self.call_timeout_timer_task and not self.call_timeout_timer_task.done():
+            self.call_timeout_timer_task.cancel()
+            try:
+                await self.call_timeout_timer_task
+            except asyncio.CancelledError:
+                pass
+            self.call_timeout_timer_task = None
         
         if self.page.dialog:
             self.page.dialog.open = False
@@ -1805,7 +1817,7 @@ class MainChatScreen(ft.UserControl):
                 callee_username = msg_data.get("callee_username", "Unknown")
                 
                 if call_id == self.current_call_id:
-                    self._close_calling_overlay()
+                    self.page.run_task(self._close_calling_overlay)
                     # Open video call page
                     self.page.run_task(self._open_video_call_page, call_id, True)
             
@@ -1815,7 +1827,7 @@ class MainChatScreen(ft.UserControl):
                 reason = msg_data.get("reason", "rejected")
                 
                 if call_id == self.current_call_id:
-                    self._close_calling_overlay()
+                    self.page.run_task(self._close_calling_overlay)
                     self.current_call_id = None
                     
                     reason_text = "User is busy" if reason == "busy" else "Call was rejected"
@@ -1924,15 +1936,14 @@ class MainChatScreen(ft.UserControl):
         self.incoming_call_dialog.open = True
         self.page.update()
         
-        # Setup timeout (30 seconds)
-        self.call_timeout_timer = ft.Timer(
-            interval=30000,
-            callback=lambda e: self.page.run_task(
-                self._handle_call_timeout
-            ),
-            repeat=False
-        )
-        self.call_timeout_timer.start()
+        # Setup timeout (30 seconds) using asyncio for incoming call
+        call_id_for_timeout = call_id  # Capture call_id for closure
+        async def timeout_task():
+            await asyncio.sleep(30)  # Wait 30 seconds
+            if self.current_call_id == call_id_for_timeout:  # Still waiting for this call
+                await self._handle_call_timeout()
+        
+        self.call_timeout_timer_task = asyncio.create_task(timeout_task())
     
     async def _accept_incoming_call(self, call_id: str, caller_id: str):
         """Accept incoming call"""
@@ -2017,7 +2028,7 @@ class MainChatScreen(ft.UserControl):
             self.call_ringtone = None
         
         # Close dialog/overlay
-        self._close_calling_overlay()
+        await self._close_calling_overlay()
         if self.incoming_call_dialog:
             self.incoming_call_dialog.open = False
             self.incoming_call_dialog = None
@@ -2056,7 +2067,15 @@ class MainChatScreen(ft.UserControl):
                 self.page.update()
                 return
             
-            # Create video call page
+            if not VIDEO_CALL_AVAILABLE or not VideoCallPage:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Video call not available. Please install: pip install opencv-python aiortc"),
+                    bgcolor=config.ERROR_COLOR
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
             self.current_call_page = VideoCallPage(
                 page=self.page,
                 call_id=call_id,

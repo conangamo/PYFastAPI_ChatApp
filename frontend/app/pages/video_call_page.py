@@ -1,12 +1,25 @@
 import flet as ft
-import cv2
 import base64
 import asyncio
 import logging
 from typing import Optional, Callable
 from datetime import datetime
 
-from ..utils.webrtc_handler import WebRTCHandler
+# Optional imports for video call functionality
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    cv2 = None
+
+try:
+    from ..utils.webrtc_handler import WebRTCHandler
+    WEBRTC_AVAILABLE = True
+except (ImportError, AttributeError):
+    WEBRTC_AVAILABLE = False
+    WebRTCHandler = None
+
 from ..websocket.client import WebSocketClient, get_ws_client
 
 logger = logging.getLogger(__name__)
@@ -37,14 +50,14 @@ class VideoCallPage(ft.UserControl):
         self.ws_client = ws_client or get_ws_client()
         
         self.webrtc_handler: Optional[WebRTCHandler] = None
-        self.camera_cap: Optional[cv2.VideoCapture] = None
-        self.camera_timer: Optional[ft.Timer] = None
+        self.camera_cap = None  # Will be cv2.VideoCapture if available
+        self.camera_timer_task: Optional[asyncio.Task] = None
         self.local_video_image: Optional[ft.Image] = None
         self.remote_video_image: Optional[ft.Image] = None
         self.status_text: Optional[ft.Text] = None
         self.end_call_button: Optional[ft.ElevatedButton] = None
         self.call_duration_text: Optional[ft.Text] = None
-        self.duration_timer: Optional[ft.Timer] = None
+        self.duration_timer_task: Optional[asyncio.Task] = None
         self.call_start_time: Optional[datetime] = None
         self.initialized = False
         self.closed = False
@@ -171,6 +184,12 @@ class VideoCallPage(ft.UserControl):
         await self._cleanup()
     
     async def _setup_camera_preview(self):
+        if not CV2_AVAILABLE:
+            logger.error("OpenCV not available. Please install: pip install opencv-python")
+            self.status_text.value = "Camera not available (OpenCV missing)"
+            self.update()
+            return
+        
         try:
             self.camera_cap = cv2.VideoCapture(0)
             if not self.camera_cap.isOpened():
@@ -179,12 +198,19 @@ class VideoCallPage(ft.UserControl):
             self.camera_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.camera_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             
-            self.camera_timer = ft.Timer(
-                interval=33,  # ~30fps
-                callback=self._update_camera_preview,
-                repeat=True
-            )
-            self.camera_timer.start()
+            # Start camera preview update loop using asyncio
+            async def camera_update_loop():
+                while CV2_AVAILABLE and self.camera_cap and self.camera_cap.isOpened():
+                    try:
+                        self._update_camera_preview()
+                        await asyncio.sleep(1/30)  # ~30fps (33ms)
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        logger.error(f"Error in camera update loop: {e}")
+                        break
+            
+            self.camera_timer_task = asyncio.create_task(camera_update_loop())
             
             logger.info("Camera preview setup completed")
         
@@ -194,6 +220,9 @@ class VideoCallPage(ft.UserControl):
             self.update()
     
     def _update_camera_preview(self, e=None):
+        if not CV2_AVAILABLE:
+            return
+        
         if not self.camera_cap or not self.camera_cap.isOpened():
             return
         
@@ -214,6 +243,12 @@ class VideoCallPage(ft.UserControl):
             logger.error(f"Error updating camera preview: {e}")
     
     async def _initialize_call(self):
+        if not WEBRTC_AVAILABLE or not WebRTCHandler:
+            logger.error("WebRTC handler not available")
+            self.status_text.value = "WebRTC not available"
+            self.update()
+            return
+        
         try:
             self.webrtc_handler = WebRTCHandler(
                 call_id=self.call_id,
@@ -268,6 +303,9 @@ class VideoCallPage(ft.UserControl):
             self.update()
     
     def _on_remote_video_frame(self, frame):
+        if not CV2_AVAILABLE:
+            return
+        
         try:
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             _, buffer = cv2.imencode('.jpg', frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -404,15 +442,23 @@ class VideoCallPage(ft.UserControl):
     
     async def _cleanup(self):
         try:
-            if self.duration_timer:
-                self.duration_timer.cancel()
-                self.duration_timer = None
+            if self.duration_timer_task and not self.duration_timer_task.done():
+                self.duration_timer_task.cancel()
+                try:
+                    await self.duration_timer_task
+                except asyncio.CancelledError:
+                    pass
+                self.duration_timer_task = None
             
-            if self.camera_timer:
-                self.camera_timer.cancel()
-                self.camera_timer = None
+            if self.camera_timer_task and not self.camera_timer_task.done():
+                self.camera_timer_task.cancel()
+                try:
+                    await self.camera_timer_task
+                except asyncio.CancelledError:
+                    pass
+                self.camera_timer_task = None
             
-            if self.camera_cap and self.camera_cap.isOpened():
+            if CV2_AVAILABLE and self.camera_cap and self.camera_cap.isOpened():
                 self.camera_cap.release()
                 self.camera_cap = None
             
@@ -426,12 +472,19 @@ class VideoCallPage(ft.UserControl):
             logger.error(f"Error during cleanup: {e}")
     
     def _start_call_duration_timer(self):
-        self.duration_timer = ft.Timer(
-            interval=1000,  # 1 second
-            callback=self._update_call_duration,
-            repeat=True
-        )
-        self.duration_timer.start()
+        """Start call duration timer using asyncio"""
+        async def duration_update_loop():
+            while self.call_start_time and not self.closed:
+                try:
+                    self._update_call_duration()
+                    await asyncio.sleep(1)  # Update every 1 second
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in duration update loop: {e}")
+                    break
+        
+        self.duration_timer_task = asyncio.create_task(duration_update_loop())
     
     def _update_call_duration(self, e=None):
         if not self.call_start_time:

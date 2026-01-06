@@ -38,69 +38,100 @@ async def send_message(
             detail="You are not a participant in this conversation"
         )
     
-    # Create message
-    new_message = Message(
-        conversation_id=message_data.conversation_id,
-        sender_id=current_user.id,
-        content=message_data.content,
-        file_url=message_data.file_url,
-        file_type=message_data.file_type,
-        file_name=message_data.file_name
-    )
-    db.add(new_message)
-    
-    result = await db.execute(
-        select(Conversation).where(Conversation.id == message_data.conversation_id)
-    )
-    conversation = result.scalar_one()
-    conversation.updated_at = new_message.created_at
-    
-    await db.commit()
-    await db.refresh(new_message)
-    
-    ws_message = WSMessage(
-        type=WSMessageType.NEW_MESSAGE,
-        data=WSChatMessage(
+    try:
+        # Create message
+        new_message = Message(
+            conversation_id=message_data.conversation_id,
+            sender_id=current_user.id,
+            content=message_data.content,
+            file_url=message_data.file_url,
+            file_type=message_data.file_type,
+            file_name=message_data.file_name
+        )
+        db.add(new_message)
+        
+        # Update conversation updated_at
+        result = await db.execute(
+            select(Conversation).where(Conversation.id == message_data.conversation_id)
+        )
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found"
+            )
+        
+        # Commit to get created_at timestamp
+        await db.commit()
+        await db.refresh(new_message)
+        
+        # Update conversation updated_at with the message's created_at
+        if new_message.created_at:
+            conversation.updated_at = new_message.created_at
+            await db.commit()
+        
+        # Build WebSocket message
+        try:
+            ws_message = WSMessage(
+                type=WSMessageType.NEW_MESSAGE,
+                data=WSChatMessage(
+                    conversation_id=new_message.conversation_id,
+                    message_id=new_message.id,
+                    sender_id=new_message.sender_id,
+                    sender_username=current_user.username or "Unknown",
+                    sender_display_name=current_user.display_name or current_user.username or "Unknown User",
+                    content=new_message.content,
+                    message_type=new_message.file_type or "text",
+                    file_url=new_message.file_url,
+                    created_at=new_message.created_at
+                ).model_dump(mode='json'),
+                timestamp=datetime.utcnow()
+            )
+            
+            await manager.broadcast_to_conversation(
+                ws_message,
+                message_data.conversation_id,
+                exclude_user_id=None
+            )
+        except Exception as ws_error:
+            # Log WebSocket error but don't fail the request
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error broadcasting message via WebSocket: {ws_error}")
+        
+        # Return message with sender info
+        msg_response = MessageResponse(
+            id=new_message.id,
             conversation_id=new_message.conversation_id,
-            message_id=new_message.id,
             sender_id=new_message.sender_id,
-            sender_username=current_user.username,
-            sender_display_name=current_user.display_name,
+            sender_username=current_user.username or "Unknown",
+            sender_display_name=current_user.display_name or current_user.username or "Unknown User",
             content=new_message.content,
-            message_type=new_message.file_type or "text",
             file_url=new_message.file_url,
-            created_at=new_message.created_at
-        ).model_dump(mode='json'),
-        timestamp=datetime.utcnow()
-    )
+            file_type=new_message.file_type,
+            file_name=new_message.file_name,
+            created_at=new_message.created_at,
+            edited_at=new_message.edited_at,
+            is_deleted=new_message.is_deleted,
+            # Read Receipts
+            delivered_at=new_message.delivered_at,
+            read_at=new_message.read_at,
+            read_by_user_id=new_message.read_by_user_id
+        )
+        
+        return msg_response
     
-    await manager.broadcast_to_conversation(
-        ws_message,
-        message_data.conversation_id,
-        exclude_user_id=None
-    )
-    
-    # Return message with sender info
-    msg_response = MessageResponse(
-        id=new_message.id,
-        conversation_id=new_message.conversation_id,
-        sender_id=new_message.sender_id,
-        sender_username=current_user.username,
-        sender_display_name=current_user.display_name,
-        content=new_message.content,
-        file_url=new_message.file_url,
-        file_type=new_message.file_type,
-        file_name=new_message.file_name,
-        created_at=new_message.created_at,
-        edited_at=new_message.edited_at,
-        is_deleted=new_message.is_deleted,
-        # Read Receipts
-        delivered_at=new_message.delivered_at,
-        read_at=new_message.read_at,
-        read_by_user_id=new_message.read_by_user_id
-    )
-    
-    return msg_response
+    except Exception as e:
+        await db.rollback()
+        import logging
+        import traceback
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error sending message: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error sending message: {str(e)}"
+        )
 
 
 @router.get("/", response_model=List[MessageResponse])
@@ -146,32 +177,83 @@ async def get_messages(
         .offset(skip)
         .limit(limit)
     )
-    messages = result.scalars().all()
+    try:
+        messages = result.scalars().all()
+        
+        # Manually build response with sender info
+        messages_response = []
+        for msg in messages:
+            try:
+                # Safely access sender attributes
+                if msg.sender:
+                    sender_username = getattr(msg.sender, 'username', None) or "Unknown"
+                    sender_display_name = getattr(msg.sender, 'display_name', None) or sender_username or "Unknown User"
+                else:
+                    sender_username = "Unknown"
+                    sender_display_name = "Unknown User"
+                
+                msg_dict = {
+                    "id": msg.id,
+                    "conversation_id": msg.conversation_id,
+                    "sender_id": msg.sender_id,
+                    "sender_username": sender_username,
+                    "sender_display_name": sender_display_name,
+                    "content": msg.content or "",
+                    "file_url": msg.file_url,
+                    "file_type": msg.file_type,
+                    "file_name": msg.file_name,
+                    "created_at": msg.created_at,
+                    "edited_at": msg.edited_at,
+                    "is_deleted": msg.is_deleted or "false",
+                    # Read Receipts
+                    "delivered_at": msg.delivered_at,
+                    "read_at": msg.read_at,
+                    "read_by_user_id": msg.read_by_user_id
+                }
+                messages_response.append(MessageResponse(**msg_dict))
+            except Exception as e:
+                # Log error but continue processing other messages
+                import logging
+                import traceback
+                logger = logging.getLogger(__name__)
+                logger.error(f"Error processing message {msg.id}: {e}")
+                logger.error(traceback.format_exc())
+                # Create a minimal response for this message
+                try:
+                    msg_dict = {
+                        "id": msg.id,
+                        "conversation_id": msg.conversation_id,
+                        "sender_id": msg.sender_id,
+                        "sender_username": "Unknown",
+                        "sender_display_name": "Unknown User",
+                        "content": msg.content if msg.content else "",
+                        "file_url": msg.file_url,
+                        "file_type": msg.file_type,
+                        "file_name": msg.file_name,
+                        "created_at": msg.created_at if msg.created_at else datetime.utcnow(),
+                        "edited_at": msg.edited_at,
+                        "is_deleted": msg.is_deleted or "false",
+                        "delivered_at": msg.delivered_at,
+                        "read_at": msg.read_at,
+                        "read_by_user_id": msg.read_by_user_id
+                    }
+                    messages_response.append(MessageResponse(**msg_dict))
+                except Exception as inner_e:
+                    logger.error(f"Error creating fallback message response: {inner_e}")
+                    # Skip this message entirely if we can't even create a fallback
+        
+        return messages_response
     
-    # Manually build response with sender info
-    messages_response = []
-    for msg in messages:
-        msg_dict = {
-            "id": msg.id,
-            "conversation_id": msg.conversation_id,
-            "sender_id": msg.sender_id,
-            "sender_username": msg.sender.username if msg.sender else "Unknown",
-            "sender_display_name": msg.sender.display_name if msg.sender else "Unknown User",
-            "content": msg.content,
-            "file_url": msg.file_url,
-            "file_type": msg.file_type,
-            "file_name": msg.file_name,
-            "created_at": msg.created_at,
-            "edited_at": msg.edited_at,
-            "is_deleted": msg.is_deleted,
-            # Read Receipts
-            "delivered_at": msg.delivered_at,
-            "read_at": msg.read_at,
-            "read_by_user_id": msg.read_by_user_id
-        }
-        messages_response.append(MessageResponse(**msg_dict))
-    
-    return messages_response
+    except Exception as e:
+        import logging
+        import traceback
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error getting messages: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving messages: {str(e)}"
+        )
 
 
 @router.put("/{message_id}", response_model=MessageResponse)
