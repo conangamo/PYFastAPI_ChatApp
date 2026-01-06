@@ -39,9 +39,15 @@ CREATE TABLE IF NOT EXISTS messages (
     file_url VARCHAR(500),
     file_type VARCHAR(50),
     file_name VARCHAR(255),
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    edited_at TIMESTAMP WITH TIME ZONE,
+    is_deleted VARCHAR(10) NOT NULL DEFAULT 'false',
+    delivered_at TIMESTAMP WITH TIME ZONE,
+    read_at TIMESTAMP WITH TIME ZONE,
+    read_by_user_id UUID,
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-    FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL
+    FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (read_by_user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- Table: conversation_participants
@@ -64,6 +70,11 @@ CREATE INDEX idx_conversations_updated_at ON conversations(updated_at DESC);
 CREATE INDEX idx_participants_user_id ON conversation_participants(user_id);
 CREATE INDEX idx_messages_conversation_created ON messages(conversation_id, created_at DESC);
 CREATE INDEX idx_messages_sender ON messages(sender_id);
+CREATE INDEX idx_messages_edited_at ON messages(edited_at);
+CREATE INDEX idx_messages_is_deleted ON messages(is_deleted);
+CREATE INDEX idx_messages_delivered_at ON messages(delivered_at);
+CREATE INDEX idx_messages_read_at ON messages(read_at);
+CREATE INDEX idx_messages_read_by_user_id ON messages(read_by_user_id);
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -79,6 +90,20 @@ CREATE TRIGGER update_conversations_updated_at
     BEFORE UPDATE ON conversations
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- Create message_reactions table (for emoji reactions)
+CREATE TABLE IF NOT EXISTS message_reactions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    emoji VARCHAR(10) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    UNIQUE(message_id, user_id, emoji)
+);
+
+CREATE INDEX idx_reactions_message_id ON message_reactions(message_id);
+CREATE INDEX idx_reactions_user_id ON message_reactions(user_id);
+CREATE INDEX idx_reactions_emoji ON message_reactions(emoji);
 
 -- Insert sample data for testing (optional, comment out for production)
 -- INSERT INTO users (email, username, password_hash, display_name) VALUES

@@ -61,6 +61,9 @@ class MainChatScreen(ft.UserControl):
         self.call_timeout_timer_task: Optional[asyncio.Task] = None
         self.incoming_call_dialog: Optional[ft.AlertDialog] = None
         self.call_ringtone: Optional[ft.Audio] = None
+        self._is_unmounted = False  # Track if component is unmounted
+        self.current_call_caller_id: Optional[str] = None  # Store caller ID for incoming calls
+        self.current_call_caller_username: Optional[str] = None  # Store caller username for incoming calls
         
         # UI Components
         self.conversation_list_view = ft.ListView(spacing=5, padding=10, auto_scroll=True)
@@ -286,8 +289,9 @@ class MainChatScreen(ft.UserControl):
     def will_unmount(self):
         """Called when component will unmount"""
         print("👋 MainChatScreen unmounting...")
+        self._is_unmounted = True  # Mark as unmounted
         # Disconnect WebSocket
-        if self.ws_client:
+        if self.ws_client and self.page:
             self.page.run_task(self.ws_client.disconnect)
         # Stop periodic refresh
         # Note: The periodic refresh task will check for page availability and stop itself
@@ -1735,7 +1739,14 @@ class MainChatScreen(ft.UserControl):
     
     def _show_calling_overlay(self, remote_username: str):
         """Show calling overlay while waiting for answer"""
+        if not self.page:
+            return
+        
         # Create overlay dialog
+        def cancel_call_handler(e):
+            if self.page:
+                self.page.run_task(self._cancel_call)
+        
         calling_dialog = ft.AlertDialog(
             title=ft.Text("Calling..."),
             content=ft.Column([
@@ -1745,7 +1756,7 @@ class MainChatScreen(ft.UserControl):
             actions=[
                 ft.TextButton(
                     text="Cancel",
-                    on_click=lambda e: self.page.run_task(self._cancel_call)
+                    on_click=cancel_call_handler
                 )
             ],
             modal=True
@@ -1775,7 +1786,7 @@ class MainChatScreen(ft.UserControl):
                 pass
             self.call_timeout_timer_task = None
         
-        if self.page.dialog:
+        if self.page and self.page.dialog:
             self.page.dialog.open = False
             self.page.dialog = None
             self.page.update()
@@ -1809,17 +1820,21 @@ class MainChatScreen(ft.UserControl):
                     return
                 
                 self.current_call_id = call_id
+                self.current_call_caller_id = caller_id
+                self.current_call_caller_username = caller_display_name or caller_username
                 self._show_incoming_call_dialog(call_id, caller_id, caller_display_name)
             
             elif msg_type == "call_accepted":
                 # Call was accepted by callee
                 call_id = msg_data.get("call_id")
                 callee_username = msg_data.get("callee_username", "Unknown")
+                callee_id = msg_data.get("callee_id")
                 
                 if call_id == self.current_call_id:
                     self.page.run_task(self._close_calling_overlay)
                     # Open video call page
-                    self.page.run_task(self._open_video_call_page, call_id, True)
+                    # When caller receives call_accepted, remote user is the callee
+                    self.page.run_task(self._open_video_call_page, call_id, True, callee_id, callee_username)
             
             elif msg_type == "call_reject":
                 # Call was rejected
@@ -1948,6 +1963,8 @@ class MainChatScreen(ft.UserControl):
     async def _accept_incoming_call(self, call_id: str, caller_id: str):
         """Accept incoming call"""
         try:
+            print(f"Accepting incoming call: call_id={call_id}, caller_id={caller_id}")
+            
             # Stop ringtone
             if self.call_ringtone:
                 # Stop audio if possible
@@ -1961,24 +1978,63 @@ class MainChatScreen(ft.UserControl):
                 self.page.update()
             
             # Cancel timeout
-            if self.call_timeout_timer:
-                self.call_timeout_timer.cancel()
-                self.call_timeout_timer = None
+            if self.call_timeout_timer_task and not self.call_timeout_timer_task.done():
+                print("Cancelling timeout task...")
+                self.call_timeout_timer_task.cancel()
+                try:
+                    await self.call_timeout_timer_task
+                except asyncio.CancelledError:
+                    pass
+                self.call_timeout_timer_task = None
+                print("Timeout task cancelled")
+            
+            # Check WebSocket connection
+            if not self.ws_client or not self.ws_client.connected:
+                raise Exception("WebSocket not connected")
             
             # Send accept message
+            print(f"Sending call accept message...")
             await self.ws_client.send_call_accept(
                 call_id=call_id,
                 caller_id=caller_id,
                 callee_id=str(self.user.id)
             )
+            print("Call accept message sent")
             
             # Open video call page
-            await self._open_video_call_page(call_id, False)
+            # When accepting call, remote user is the caller
+            print(f"Opening video call page...")
+            caller_username = self.current_call_caller_username or "Unknown"
+            await self._open_video_call_page(call_id, False, remote_user_id=caller_id, remote_username=caller_username)
+            print("Video call page opened successfully")
+            
+            # Clear caller info after opening call page
+            self.current_call_caller_id = None
+            self.current_call_caller_username = None
         
         except Exception as e:
             print(f"Error accepting call: {e}")
             import traceback
             traceback.print_exc()
+            
+            # Show error to user
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Failed to accept call: {str(e)}"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            
+            # Reset call state
+            self.current_call_id = None
+            self.current_call_caller_id = None
+            self.current_call_caller_username = None
+            if self.incoming_call_dialog:
+                self.incoming_call_dialog.open = False
+                self.incoming_call_dialog = None
+                if self.page:
+                    self.page.dialog = None
+                    self.page.update()
     
     async def _reject_incoming_call(self, call_id: str, caller_id: str, reason: str):
         """Reject incoming call"""
@@ -1995,9 +2051,13 @@ class MainChatScreen(ft.UserControl):
                 self.page.update()
             
             # Cancel timeout
-            if self.call_timeout_timer:
-                self.call_timeout_timer.cancel()
-                self.call_timeout_timer = None
+            if self.call_timeout_timer_task and not self.call_timeout_timer_task.done():
+                self.call_timeout_timer_task.cancel()
+                try:
+                    await self.call_timeout_timer_task
+                except asyncio.CancelledError:
+                    pass
+                self.call_timeout_timer_task = None
             
             # Send reject message
             await self.ws_client.send_call_reject(
@@ -2018,10 +2078,11 @@ class MainChatScreen(ft.UserControl):
         """Handle call timeout (30 seconds)"""
         if self.current_call_id:
             # End the call
-            await self.ws_client.send_call_end(
-                call_id=self.current_call_id,
-                ended_by=str(self.user.id)
-            )
+            if self.ws_client:
+                await self.ws_client.send_call_end(
+                    call_id=self.current_call_id,
+                    ended_by=str(self.user.id)
+                )
         
         # Stop ringtone
         if self.call_ringtone:
@@ -2032,48 +2093,76 @@ class MainChatScreen(ft.UserControl):
         if self.incoming_call_dialog:
             self.incoming_call_dialog.open = False
             self.incoming_call_dialog = None
-            self.page.dialog = None
-            self.page.update()
+            if self.page:
+                self.page.dialog = None
+                self.page.update()
         
         self.current_call_id = None
         
-        self.page.snack_bar = ft.SnackBar(
-            content=ft.Text("Call timeout - no answer"),
-            bgcolor=config.ERROR_COLOR
-        )
-        self.page.snack_bar.open = True
-        self.page.update()
+        if self.page:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Call timeout - no answer"),
+                bgcolor=config.ERROR_COLOR
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
     
-    async def _open_video_call_page(self, call_id: str, is_caller: bool):
-        """Open video call page"""
+    async def _open_video_call_page(self, call_id: str, is_caller: bool, remote_user_id: Optional[str] = None, remote_username: Optional[str] = None):
+
         try:
-            # Get remote user info
-            remote_user_id = None
-            remote_username = "Unknown"
-            
-            if self.current_conversation:
-                for participant in self.current_conversation.participants:
-                    if str(participant.user_id) != str(self.user.id):
-                        remote_user_id = str(participant.user_id)
-                        remote_username = participant.display_name or participant.username
-                        break
-            
-            if not remote_user_id:
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text("Could not find remote user"),
-                    bgcolor=config.ERROR_COLOR
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
+            # Check if component is still mounted and page is available
+            if self._is_unmounted:
+                print("Error: component is unmounted, cannot open video call page")
+                return
+                
+            if not self.page:
+                print("Error: page is None, cannot open video call page")
                 return
             
+            # Get remote user info
+            # If remote_user_id is provided (e.g., when accepting call), use it
+            # Otherwise, find from current conversation
+            if not remote_user_id:
+                if self.current_conversation:
+                    for participant in self.current_conversation.participants:
+                        if str(participant.user_id) != str(self.user.id):
+                            remote_user_id = str(participant.user_id)
+                            remote_username = remote_username or participant.display_name or participant.username
+                            break
+            
+            # If still no remote_user_id, show error
+            if not remote_user_id:
+                print(f"Warning: Could not find remote user from conversation. Current conversation: {self.current_conversation}")
+                if self.current_conversation:
+                    print(f"  - Conversation participants: {[str(p.user_id) for p in self.current_conversation.participants]}")
+                print(f"  - Current user ID: {self.user.id}")
+                
+                if self.page:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("Could not find remote user. Please try again."),
+                        bgcolor=config.ERROR_COLOR
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                return
+            
+            # Set default username if not provided
+            if not remote_username:
+                remote_username = "Unknown"
+            
             if not VIDEO_CALL_AVAILABLE or not VideoCallPage:
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text("Video call not available. Please install: pip install opencv-python aiortc"),
-                    bgcolor=config.ERROR_COLOR
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
+                if self.page:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("Video call not available. Please install: pip install opencv-python aiortc"),
+                        bgcolor=config.ERROR_COLOR
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                return
+            
+            # Double check page is still available before creating VideoCallPage
+            if not self.page:
+                print("Error: page became None before creating VideoCallPage")
                 return
             
             self.current_call_page = VideoCallPage(
@@ -2088,30 +2177,99 @@ class MainChatScreen(ft.UserControl):
             )
             
             # Replace main screen with video call page
-            self.page.controls.clear()
-            self.page.add(self.current_call_page)
-            self.page.update()
+            # Check again in case component was unmounted or page was set to None during VideoCallPage creation
+            if self._is_unmounted:
+                print("Error: component was unmounted after creating VideoCallPage")
+                return
+                
+            if not self.page:
+                print("Error: page became None after creating VideoCallPage")
+                return
+            
+            print(f"Replacing main screen with video call page...")
+            try:
+                # Store page reference before clearing
+                page_ref = self.page
+                if not page_ref:
+                    print("ERROR: page is None before clearing controls")
+                    return
+                
+                # Clear existing controls and add video call page
+                page_ref.controls.clear()
+                page_ref.add(self.current_call_page)
+                page_ref.update()
+                print("Video call page added to page successfully")
+                
+                # Manually trigger did_mount_async immediately after adding to page
+                # Flet's did_mount_async might not be called reliably, so we call it manually
+                if hasattr(self.current_call_page, 'did_mount_async') and not self.current_call_page.initialized:
+                    print("Manually calling did_mount_async to initialize camera...")
+                    # Use run_task to call async function
+                    try:
+                        if page_ref:
+                            page_ref.run_task(self.current_call_page.did_mount_async)
+                            print("did_mount_async task started")
+                        else:
+                            print("ERROR: page_ref is None, cannot start did_mount_async")
+                    except Exception as e:
+                        print(f"Error starting did_mount_async task: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print(f"did_mount_async check: hasattr={hasattr(self.current_call_page, 'did_mount_async')}, initialized={getattr(self.current_call_page, 'initialized', 'N/A')}")
+            except (AttributeError, RuntimeError) as e:
+                print(f"Error updating page: {e}")
+                import traceback
+                traceback.print_exc()
+                print("Page may have been unmounted or invalidated")
+                # Don't raise, just log the error
+                # Try to show error message if page is still available
+                if self.page:
+                    try:
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text(f"Failed to display video call: {str(e)}"),
+                            bgcolor=config.ERROR_COLOR
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                    except:
+                        pass
         
         except Exception as e:
             print(f"Error opening video call page: {e}")
             import traceback
             traceback.print_exc()
+            
+            # Show error if page is available
+            if self.page:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Failed to open video call: {str(e)}"),
+                    bgcolor=config.ERROR_COLOR
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
     
     def _close_video_call_page(self):
         """Close video call page and return to main screen"""
         try:
+            if not self.page:
+                print("Error: page is None, cannot close video call page")
+                return
+            
             # Cleanup call page
             if self.current_call_page:
-                self.page.run_task(self.current_call_page._cleanup)
+                if self.page:
+                    self.page.run_task(self.current_call_page._cleanup)
                 self.current_call_page = None
             
             # Clear call state
             self.current_call_id = None
             
             # Restore main screen
-            self.page.controls.clear()
-            self.page.add(self)
-            self.page.update()
+            if self.page:
+                self.page.controls.clear()
+                self.page.add(self)
+                self.page.update()
         
         except Exception as e:
             print(f"Error closing video call page: {e}")

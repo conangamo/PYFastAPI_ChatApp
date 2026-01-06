@@ -2,133 +2,94 @@
 
 ## Overview
 
-This directory contains SQL migration scripts for the database schema changes.
+This directory contains SQL migration scripts for updating the database schema.
 
-Since this project uses SQLAlchemy's `Base.metadata.create_all()` instead of Alembic, migrations must be applied manually.
+## Applied Migrations
 
----
+### 002_add_all_message_columns.sql
+**Date:** 2026-01-06  
+**Description:** Adds all missing columns to the `messages` table required by the Message model.
+
+**Columns Added:**
+- `edited_at` - Timestamp for when a message was last edited
+- `is_deleted` - Soft delete flag ("false" or "true")
+- `delivered_at` - Timestamp for message delivery (read receipts)
+- `read_at` - Timestamp for when message was read (read receipts)
+- `read_by_user_id` - User ID who read the message (read receipts)
+
+**Indexes Created:**
+- `idx_messages_edited_at`
+- `idx_messages_is_deleted`
+- `idx_messages_delivered_at`
+- `idx_messages_read_at`
+- `idx_messages_read_by_user_id`
 
 ## How to Apply Migrations
 
-### **Option 1: Fresh Start (Development Only)** 🔴
-
-**WARNING**: This will DELETE all existing data!
+### Option 1: Using Docker (Recommended)
 
 ```bash
-# Stop backend
-docker-compose down
-
-# Remove database volume
-docker volume rm chat_v4_postgres_data
-
-# Restart (will recreate with new schema)
-docker-compose up -d
-```
-
----
-
-### **Option 2: Manual Migration (Keep Data)** ✅
-
-**Recommended for production or if you want to keep existing data.**
-
-#### **Step 1: Connect to PostgreSQL**
-
-```bash
-# Access PostgreSQL container
-docker-compose exec postgres psql -U postgres -d chat_app
-```
-
-#### **Step 2: Run Migration Script**
-
-From inside PostgreSQL shell:
-
-```sql
-\i /path/to/migrations/001_add_read_receipts.sql
-```
-
-Or from host machine:
-
-```bash
-# Copy migration to container
-docker cp backend/migrations/001_add_read_receipts.sql chat_v4_postgres_1:/tmp/
+# Copy migration file to container
+docker cp backend/migrations/002_add_all_message_columns.sql chat_postgres:/tmp/
 
 # Execute migration
-docker-compose exec postgres psql -U postgres -d chat_app -f /tmp/001_add_read_receipts.sql
+docker exec chat_postgres psql -U postgres -d chatapp -f /tmp/002_add_all_message_columns.sql
 ```
 
-#### **Step 3: Verify Migration**
+### Option 2: Direct PostgreSQL Connection
+
+```bash
+# Connect to PostgreSQL
+docker exec -it chat_postgres psql -U postgres -d chatapp
+
+# Run migration
+\i /path/to/backend/migrations/002_add_all_message_columns.sql
+```
+
+### Option 3: Fresh Database (Development Only)
+
+If you want to start fresh with all columns included:
+
+1. Stop containers:
+   ```bash
+   docker-compose down
+   ```
+
+2. Remove database volume:
+   ```bash
+   docker volume rm <volume_name>
+   ```
+
+3. Restart (will use updated `database/init.sql`):
+   ```bash
+   docker-compose up -d
+   ```
+
+## Verify Migration
+
+Check if all columns exist:
 
 ```sql
--- Check if columns exist
 SELECT column_name, data_type, is_nullable
 FROM information_schema.columns
 WHERE table_name = 'messages' 
-AND column_name IN ('delivered_at', 'read_at', 'read_by_user_id');
+AND column_name IN ('edited_at', 'is_deleted', 'delivered_at', 'read_at', 'read_by_user_id')
+ORDER BY column_name;
 ```
 
 Expected output:
 ```
-    column_name     |           data_type           | is_nullable 
---------------------+-------------------------------+-------------
- delivered_at       | timestamp with time zone      | YES
- read_at            | timestamp with time zone      | YES
- read_by_user_id    | uuid                          | YES
+   column_name   |        data_type         | is_nullable 
+-----------------+--------------------------+-------------
+ delivered_at    | timestamp with time zone | YES
+ edited_at       | timestamp with time zone | YES
+ is_deleted      | character varying        | NO
+ read_at         | timestamp with time zone | YES
+ read_by_user_id | uuid                     | YES
 ```
 
----
+## Notes
 
-## Available Migrations
-
-| Migration | Description | Date |
-|-----------|-------------|------|
-| `001_add_read_receipts.sql` | Add read receipts columns to messages table | 2025-11-20 |
-
----
-
-## Rollback Migrations
-
-### **Rollback: 001_add_read_receipts**
-
-```sql
--- Remove indexes
-DROP INDEX IF EXISTS idx_messages_delivered_at;
-DROP INDEX IF EXISTS idx_messages_read_at;
-DROP INDEX IF EXISTS idx_messages_read_by_user_id;
-
--- Remove foreign key
-ALTER TABLE messages
-DROP CONSTRAINT IF EXISTS fk_messages_read_by_user;
-
--- Remove columns
-ALTER TABLE messages 
-DROP COLUMN IF EXISTS delivered_at,
-DROP COLUMN IF EXISTS read_at,
-DROP COLUMN IF EXISTS read_by_user_id;
-```
-
----
-
-## Future: Setup Alembic
-
-For better migration management, consider setting up Alembic:
-
-```bash
-# Install Alembic
-pip install alembic
-
-# Initialize Alembic
-alembic init alembic
-
-# Generate migration from models
-alembic revision --autogenerate -m "Add read receipts"
-
-# Apply migration
-alembic upgrade head
-```
-
-This will provide:
-- Version control for migrations
-- Auto-generate migrations from model changes
-- Easy rollback
-- Migration history
-
+- All migrations use `IF NOT EXISTS` to prevent errors if columns already exist
+- Migrations are idempotent - safe to run multiple times
+- The `database/init.sql` file has been updated to include all columns for new installations
