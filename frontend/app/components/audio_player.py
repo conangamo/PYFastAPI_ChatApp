@@ -1,26 +1,11 @@
-"""
-Audio Player Component
-Handles playback of audio files (voice messages)
-"""
 import flet as ft
 import asyncio
 from datetime import datetime, timedelta
 
 
 class AudioPlayer(ft.UserControl):
-    """
-    Audio Player component with play/pause, progress bar, and duration display
-    """
     
     def __init__(self, audio_url: str, duration: float = None, on_download=None):
-        """
-        Initialize Audio Player
-        
-        Args:
-            audio_url: URL to audio file
-            duration: Duration in seconds (optional)
-            on_download: Callback for download button
-        """
         super().__init__()
         self.audio_url = audio_url
         self.duration = duration
@@ -122,7 +107,6 @@ class AudioPlayer(ft.UserControl):
         self.update()
     
     def pause(self):
-        """Pause audio playback"""
         print(f"⏸️ Pausing audio")
         self.is_playing = False
         self.play_button.icon = ft.icons.PLAY_ARROW
@@ -134,9 +118,8 @@ class AudioPlayer(ft.UserControl):
         
         self.update()
     
-    def stop(self):
-        """Stop audio playback"""
-        print(f"⏹️ Stopping audio")
+    def stop(self): 
+        print(f" Stopping audio")
         self.is_playing = False
         self.current_time = 0.0
         self.play_button.icon = ft.icons.PLAY_ARROW
@@ -191,15 +174,6 @@ class AudioPlayer(ft.UserControl):
         self.update()
     
     def _format_time(self, seconds: float) -> str:
-        """
-        Format time in seconds to MM:SS format
-        
-        Args:
-            seconds: Time in seconds
-            
-        Returns:
-            Formatted string (e.g., "1:23")
-        """
         if seconds is None:
             return "0:00"
         
@@ -214,19 +188,8 @@ class AudioPlayer(ft.UserControl):
 
 
 class AudioPlayerSimple(ft.UserControl):
-    """
-    Simplified Audio Player with in-app playback (for messages)
-    Uses Flet's Audio widget for in-app audio playback
-    """
     
     def __init__(self, audio_url: str, duration: float = None):
-        """
-        Initialize Simple Audio Player
-        
-        Args:
-            audio_url: URL to audio file
-            duration: Duration in seconds (optional)
-        """
         super().__init__()
         self.audio_url = audio_url
         self.duration = duration
@@ -237,14 +200,9 @@ class AudioPlayerSimple(ft.UserControl):
         self.play_button = None
         
     def build(self):
-        """Build the UI"""
         # Format duration
         duration_str = self._format_time(self.duration) if self.duration else "Voice message"
         
-        # Audio URL is already full URL from API client
-        # Don't prepend base URL again to avoid duplication
-        
-        # Audio element (hidden, for playback)
         self.audio_element = ft.Audio(
             src=self.audio_url,
             autoplay=False,
@@ -254,7 +212,7 @@ class AudioPlayerSimple(ft.UserControl):
             on_position_changed=self._on_position_changed,
         )
         
-        print(f"🎵 Audio element created: {self.audio_url}")
+        print(f"Audio element created: {self.audio_url}")
         
         # Play/Pause button
         self.play_button = ft.IconButton(
@@ -329,13 +287,11 @@ class AudioPlayerSimple(ft.UserControl):
             self.update()
     
     def _on_duration_changed(self, e):
-        """Handle audio duration loaded"""
         duration_ms = int(e.data) if e.data else 0
         duration_s = duration_ms / 1000.0
         print(f"⏱️ Audio duration loaded: {duration_s:.1f}s")
     
     def _on_position_changed(self, e):
-        """Handle audio position updates"""
         position_ms = int(e.data) if e.data else 0
         position_s = position_ms / 1000.0
         # Only log every 1 second to avoid spam

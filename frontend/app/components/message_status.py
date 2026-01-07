@@ -1,36 +1,16 @@
-"""
-Message Status Component
-Displays message delivery/read status icons (✓ ✓✓ ✓✓✓)
-"""
 import flet as ft
 from datetime import datetime, timedelta
 from typing import Optional
 
 
 class MessageStatus(ft.UserControl):
-    """
-    Display message status icons
-    
-    States:
-    - ✓ Sent (grey) - Message sent successfully
-    - ✓✓ Delivered (grey) - Message delivered to recipient
-    - ✓✓ Read (blue) - Message read by recipient
-    """
+
     
     def __init__(self, 
                  created_at,  # str or datetime
                  delivered_at: Optional[datetime] = None,
                  read_at: Optional[datetime] = None):
-        """
-        Initialize Message Status
-        
-        Args:
-            created_at: When message was created/sent (str or datetime)
-            delivered_at: When message was delivered (optional)
-            read_at: When message was read (optional)
-        """
         super().__init__()
-        # Parse created_at if string
         if isinstance(created_at, str):
             try:
                 self.created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
@@ -42,7 +22,6 @@ class MessageStatus(ft.UserControl):
         self.read_at = read_at
     
     def build(self):
-        """Build status indicator"""
         if self.read_at:
             # Read - Blue double check marks
             return ft.Icon(
@@ -69,13 +48,6 @@ class MessageStatus(ft.UserControl):
             )
     
     def update_status(self, delivered_at: Optional[datetime] = None, read_at: Optional[datetime] = None):
-        """
-        Update message status
-        
-        Args:
-            delivered_at: New delivered timestamp
-            read_at: New read timestamp
-        """
         if delivered_at:
             self.delivered_at = delivered_at
         if read_at:
@@ -84,16 +56,6 @@ class MessageStatus(ft.UserControl):
     
     @staticmethod
     def _format_timestamp(dt) -> str:
-        """
-        Format timestamp for display
-        
-        Args:
-            dt: Datetime object or string
-            
-        Returns:
-            Formatted string like "14:30"
-        """
-        # Handle string timestamps
         if isinstance(dt, str):
             try:
                 dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
@@ -104,10 +66,6 @@ class MessageStatus(ft.UserControl):
 
 
 class MessageStatusWithTime(ft.UserControl):
-    """
-    Message status with timestamp display
-    Shows both the time and status icon
-    """
     
     def __init__(self,
                  created_at,  # str or datetime

@@ -1,7 +1,3 @@
-"""
-Voice Recorder Component
-Handles audio recording from microphone and saving to app data directory
-"""
 import flet as ft
 import sounddevice as sd
 import soundfile as sf
@@ -15,26 +11,13 @@ from ..utils.app_dirs import get_recordings_dir
 
 
 class VoiceRecorder(ft.UserControl):
-    """
-    Voice Recorder component with visual feedback
-    Records audio from microphone and saves to temporary MP3 file
-    """
     
     def __init__(self, page: ft.Page, on_recording_complete, max_duration: int = 120):
-        """
-        Initialize Voice Recorder
-        
-        Args:
-            page: Flet page for async operations
-            on_recording_complete: Callback function(file_path: str, duration: float)
-            max_duration: Maximum recording duration in seconds (default 120s = 2 min)
-        """
         super().__init__()
         self.page_ref = page
         self.on_recording_complete = on_recording_complete
         self.max_duration = max_duration
         
-        # Recording state
         self.is_recording = False
         self.audio_data = []
         self.sample_rate = 44100  # CD quality
@@ -50,7 +33,6 @@ class VoiceRecorder(ft.UserControl):
         self.cancel_button = None
         
     def build(self):
-        """Build the UI"""
         # Record/Stop button
         self.record_button = ft.IconButton(
             icon=ft.icons.MIC,
@@ -117,7 +99,6 @@ class VoiceRecorder(ft.UserControl):
             self.stop_recording()
     
     def start_recording(self):
-        """Start audio recording"""
         try:
             print("🎤 Starting voice recording...")
             self.is_recording = True
@@ -159,15 +140,6 @@ class VoiceRecorder(ft.UserControl):
             self.update()
     
     def _audio_callback(self, indata, frames, time, status):
-        """
-        Callback function called by sounddevice for each audio block
-        
-        Args:
-            indata: Input audio data (numpy array)
-            frames: Number of frames
-            time: Time info
-            status: Status flags
-        """
         if status:
             print(f"Audio callback status: {status}")
         
@@ -269,7 +241,6 @@ class VoiceRecorder(ft.UserControl):
             self.update()
     
     def cancel_recording(self, e):
-        """Cancel current recording without saving"""
         print("🚫 Cancelling recording...")
         
         self.is_recording = False
@@ -301,7 +272,6 @@ class VoiceRecorder(ft.UserControl):
         self.update()
     
     def reset_ui(self):
-        """Reset UI to initial state"""
         self.record_button.icon = ft.icons.MIC
         self.record_button.icon_color = ft.colors.RED_400
         self.record_button.tooltip = "Record voice message (max 2 min)"

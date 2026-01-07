@@ -1,7 +1,3 @@
-"""
-Add Member Dialog
-Dialog to add friends to an existing group
-"""
 import flet as ft
 from typing import Callable, List, Optional
 from ..api.client import get_api_client
@@ -9,7 +5,6 @@ from ..config import config
 
 
 class AddMemberDialog:
-    """Dialog to add members to group"""
     
     def __init__(
         self,
@@ -18,15 +13,6 @@ class AddMemberDialog:
         existing_participant_ids: List[str],
         on_add: Callable[[str], None]
     ):
-        """
-        Initialize add member dialog
-        
-        Args:
-            page: Flet page
-            conversation_id: Conversation ID
-            existing_participant_ids: List of user IDs already in group
-            on_add: Callback when member is added
-        """
         self.page = page
         self.conversation_id = conversation_id
         self.existing_participant_ids = existing_participant_ids
@@ -70,7 +56,6 @@ class AddMemberDialog:
         )
     
     async def load_friends(self):
-        """Load friends list (excluding existing participants)"""
         try:
             self.loading_indicator.visible = True
             self.error_text.visible = False
@@ -79,7 +64,6 @@ class AddMemberDialog:
             api = get_api_client()
             all_friends = await api.get_friends()
             
-            # Filter: Only show friends who are not already in group
             self.friends = [
                 f for f in all_friends
                 if str(f["user_id"]) not in [str(pid) for pid in self.existing_participant_ids]
@@ -142,23 +126,20 @@ class AddMemberDialog:
             self.page.update()
             
         except Exception as e:
-            print(f"❌ Error loading friends: {e}")
+            print(f"Error loading friends: {e}")
             self.loading_indicator.visible = False
             self.error_text.value = f"Lỗi: {str(e)}"
             self.error_text.visible = True
             self.page.update()
     
     async def _add_friend(self, user_id: str):
-        """Add friend to group (single)"""
         try:
             api = get_api_client()
             await api.add_participant_to_group(self.conversation_id, user_id)
             
             self.on_add(user_id)
-            # Don't close dialog - allow adding more
             self.page.update()
             
-            # Show success message
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text("Đã thêm thành viên thành công"),
                 bgcolor=config.SUCCESS_COLOR
@@ -166,11 +147,10 @@ class AddMemberDialog:
             self.page.snack_bar.open = True
             self.page.update()
             
-            # Reload friends list to remove added user
             await self.load_friends()
             
         except Exception as e:
-            print(f"❌ Error adding member: {e}")
+            print(f"Error adding member: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"Lỗi: {str(e)}"),
                 bgcolor=config.ERROR_COLOR
@@ -179,15 +159,12 @@ class AddMemberDialog:
             self.page.update()
     
     def _handle_close(self, e):
-        """Close dialog"""
         self.page.close_dialog()
         self.page.update()
     
     def open(self):
-        """Open the dialog"""
         self.page.dialog = self.dialog
         self.dialog.open = True
         self.page.update()
-        # Load friends when dialog opens
         self.page.run_task(self.load_friends)
 

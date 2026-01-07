@@ -1,9 +1,6 @@
-"""
-Dialog components
-"""
 from .profile_dialog import ProfileDialog, EditProfileDialog
 from .settings_dialog import SettingsDialog
-from .chat_dialogs import NewChatDialog, DirectChatDialog, GroupChatDialog, GroupInfoDialog
+from .chat_dialogs import NewChatDialog, DirectChatDialog, GroupChatDialog
 from .friend_chat_dialog import FriendChatDialog
 from .friend_requests_dialog import FriendRequestsDialog
 from .group_creation_dialog import GroupCreationDialog
@@ -18,7 +15,6 @@ __all__ = [
     "NewChatDialog",
     "DirectChatDialog",
     "GroupChatDialog",
-    "GroupInfoDialog",
     "FriendChatDialog",
     "FriendRequestsDialog",
     "GroupCreationDialog",

@@ -24,9 +24,25 @@ except Exception as e:
 try:
     from ..utils.webrtc_handler import WebRTCHandler
     WEBRTC_AVAILABLE = True
-except (ImportError, AttributeError):
+    print(f"[OK] WebRTCHandler imported successfully")
+except ImportError as e:
     WEBRTC_AVAILABLE = False
     WebRTCHandler = None
+    print(f"[ERROR] Failed to import WebRTCHandler: {e}")
+    import traceback
+    traceback.print_exc()
+except AttributeError as e:
+    WEBRTC_AVAILABLE = False
+    WebRTCHandler = None
+    print(f"[ERROR] AttributeError importing WebRTCHandler: {e}")
+    import traceback
+    traceback.print_exc()
+except Exception as e:
+    WEBRTC_AVAILABLE = False
+    WebRTCHandler = None
+    print(f"[ERROR] Unexpected error importing WebRTCHandler: {e}")
+    import traceback
+    traceback.print_exc()
 
 from ..websocket.client import WebSocketClient, get_ws_client
 
@@ -292,8 +308,21 @@ class VideoCallPage(ft.UserControl):
                             frame_mean = frame.mean()
                             
                             # Kiểm tra frame có hợp lệ không (không phải trắng/đen hoàn toàn)
-                            if frame_min == frame_max and (frame_min == 0 or frame_min == 255):
-                                print(f"Camera {camera_idx} frame is uniform (min=max={frame_min}), trying next camera...")
+                            # Frame hợp lệ: min != max HOẶC (min == max nhưng không phải 0 hoặc 255)
+                            # Và mean phải trong khoảng hợp lý (5-250) để tránh frame quá tối/sáng
+                            is_uniform = (frame_min == frame_max and (frame_min == 0 or frame_min == 255))
+                            is_too_dark = (frame_mean < 5.0)  # Frame quá tối (hầu hết pixel = 0)
+                            is_too_bright = (frame_mean > 250.0)  # Frame quá sáng (hầu hết pixel = 255)
+                            
+                            if is_uniform or is_too_dark or is_too_bright:
+                                reason = []
+                                if is_uniform:
+                                    reason.append(f"uniform (min=max={frame_min})")
+                                if is_too_dark:
+                                    reason.append(f"too dark (mean={frame_mean:.2f} < 5.0)")
+                                if is_too_bright:
+                                    reason.append(f"too bright (mean={frame_mean:.2f} > 250.0)")
+                                print(f"Camera {camera_idx} frame invalid: {', '.join(reason)}, trying next camera...")
                                 test_cap.release()
                                 continue
                             
@@ -395,21 +424,38 @@ class VideoCallPage(ft.UserControl):
                 logger.warning("Failed to read frame from camera")
                 return
             
-            # Kiểm tra frame có hợp lệ không (không phải trắng/đen hoàn toàn)
+            # Kiểm tra frame có hợp lệ không (không phải trắng/đen hoàn toàn hoặc quá tối/sáng)
             frame_min = frame.min()
             frame_max = frame.max()
-            if frame_min == frame_max and (frame_min == 0 or frame_min == 255):
-                # Frame trắng/đen, skip frame này
-                if not hasattr(self, '_white_frame_count'):
-                    self._white_frame_count = 0
-                self._white_frame_count += 1
-                if self._white_frame_count % 30 == 0:  # Log mỗi 30 frame trắng
-                    logger.warning(f"Skipping white/black frame (count: {self._white_frame_count})")
+            frame_mean = frame.mean()
+            
+            # Frame không hợp lệ nếu:
+            # 1. Uniform (min == max == 0 hoặc 255)
+            # 2. Quá tối (mean < 5.0) - hầu hết pixel = 0
+            # 3. Quá sáng (mean > 250.0) - hầu hết pixel = 255
+            is_uniform = (frame_min == frame_max and (frame_min == 0 or frame_min == 255))
+            is_too_dark = (frame_mean < 5.0)
+            is_too_bright = (frame_mean > 250.0)
+            
+            if is_uniform or is_too_dark or is_too_bright:
+                # Frame không hợp lệ, skip frame này
+                if not hasattr(self, '_invalid_frame_count'):
+                    self._invalid_frame_count = 0
+                self._invalid_frame_count += 1
+                if self._invalid_frame_count % 30 == 0:  # Log mỗi 30 frame
+                    reason = []
+                    if is_uniform:
+                        reason.append(f"uniform (min=max={frame_min})")
+                    if is_too_dark:
+                        reason.append(f"too dark (mean={frame_mean:.2f})")
+                    if is_too_bright:
+                        reason.append(f"too bright (mean={frame_mean:.2f})")
+                    logger.warning(f"Skipping invalid frame (count: {self._invalid_frame_count}): {', '.join(reason)}")
                 return
             
             # Reset counter nếu frame hợp lệ
-            if hasattr(self, '_white_frame_count'):
-                self._white_frame_count = 0
+            if hasattr(self, '_invalid_frame_count'):
+                self._invalid_frame_count = 0
             
             # Logging mỗi 60 frame (~2 giây) để không spam console
             if hasattr(self, '_frame_log_counter'):
@@ -440,13 +486,81 @@ class VideoCallPage(ft.UserControl):
             logger.error(traceback.format_exc())
     
     async def _initialize_call(self):
+        logger.info("_initialize_call() called")
+        print("[DEBUG] _initialize_call() called")
+        
+        # Thử import lại WebRTCHandler nếu chưa available
+        global WEBRTC_AVAILABLE, WebRTCHandler
+        print(f"[DEBUG] WEBRTC_AVAILABLE={WEBRTC_AVAILABLE}, WebRTCHandler={WebRTCHandler}")
+        
         if not WEBRTC_AVAILABLE or not WebRTCHandler:
-            logger.error("WebRTC handler not available")
-            self.status_text.value = "WebRTC not available"
-            self.update()
+            logger.warning("WebRTC handler not available, attempting to import again...")
+            print("[WARNING] WebRTC handler not available, attempting to import again...")
+            try:
+                from ..utils.webrtc_handler import WebRTCHandler as WRTCHandler
+                WebRTCHandler = WRTCHandler
+                WEBRTC_AVAILABLE = True
+                logger.info("WebRTCHandler imported successfully on retry")
+                print("[OK] WebRTCHandler imported successfully on retry")
+            except Exception as e:
+                logger.error(f"Failed to import WebRTCHandler on retry: {e}")
+                print(f"[ERROR] Failed to import WebRTCHandler on retry: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                traceback.print_exc()
+                error_msg = f"WebRTC not available: {str(e)}"
+                if "aiortc" in str(e).lower():
+                    error_msg += "\nPlease use Python 3.12 (venv312) and run: .\\run_python312.ps1"
+                if self.status_text:
+                    self.status_text.value = error_msg
+                    self.status_text.color = ft.colors.RED
+                    self.update()
+                return
+        
+        if not WEBRTC_AVAILABLE or not WebRTCHandler:
+            logger.error("WebRTC handler not available after retry")
+            error_msg = "WebRTC not available.\nPlease use Python 3.12 (venv312):\n.\\run_python312.ps1"
+            if self.status_text:
+                self.status_text.value = error_msg
+                self.status_text.color = ft.colors.RED
+                self.update()
             return
         
+        logger.info("WebRTC handler is available, proceeding with initialization...")
+        print("[OK] WebRTC handler is available, proceeding with initialization...")
+        
         try:
+            print("[DEBUG] Checking WebSocket connection...")
+            # Kiểm tra WebSocket connection
+            if not self.ws_client:
+                logger.error("WebSocket client is None, trying to get from global...")
+                from ..websocket.client import get_ws_client
+                self.ws_client = get_ws_client()
+            
+            if not self.ws_client:
+                logger.error("Cannot get WebSocket client, cannot initialize WebRTC")
+                self.status_text.value = "WebSocket not available"
+                self.status_text.color = ft.colors.RED
+                self.update()
+                return
+            
+            # Nếu WebSocket bị disconnect, thử reconnect
+            if not self.ws_client.connected:
+                logger.warning("WebSocket not connected, attempting to reconnect...")
+                self.status_text.value = "Reconnecting WebSocket..."
+                self.update()
+                try:
+                    await self.ws_client.connect()
+                    logger.info("WebSocket reconnected successfully")
+                except Exception as e:
+                    logger.error(f"Failed to reconnect WebSocket: {e}")
+                    self.status_text.value = f"WebSocket connection failed: {str(e)}"
+                    self.status_text.color = ft.colors.RED
+                    self.update()
+                    return
+            
+            logger.info(f"Initializing WebRTC: call_id={self.call_id}, is_caller={self.is_caller}, local_user={self.local_user_id}, remote_user={self.remote_user_id}, ws_connected={self.ws_client.connected}")
+            
             self.webrtc_handler = WebRTCHandler(
                 call_id=self.call_id,
                 local_user_id=self.local_user_id,
@@ -455,32 +569,59 @@ class VideoCallPage(ft.UserControl):
                 ws_client=self.ws_client
             )
             
+            print("[DEBUG] Setting callbacks...")
             self.webrtc_handler.set_remote_video_callback(self._on_remote_video_frame)
             self.webrtc_handler.set_connection_state_callback(self._on_connection_state_change)
             
+            print("[DEBUG] Calling webrtc_handler.initialize()...")
+            logger.info("Calling webrtc_handler.initialize()...")
             await self.webrtc_handler.initialize()
+            print("[OK] WebRTC handler initialized successfully")
+            logger.info("WebRTC handler initialized successfully")
             
             if self.is_caller:
+                print("[DEBUG] Starting as caller...")
                 await self._start_as_caller()
+                print("[OK] Caller started")
             else:
-                self.status_text.value = "Waiting for connection..."
-                self.update()
+                print("[DEBUG] Waiting for SDP offer from caller...")
+                if self.status_text:
+                    self.status_text.value = "Waiting for connection..."
+                    self.update()
             
+            print("[OK] WebRTC call initialized")
             logger.info("WebRTC call initialized")
         
         except Exception as e:
+            print(f"[ERROR] Error initializing call: {e}")
             logger.error(f"Error initializing call: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            traceback.print_exc()
+            if self.status_text:
+                self.status_text.value = f"Error: {str(e)}"
+                self.status_text.color = ft.colors.RED
+                self.update()
             raise
     
     async def _start_as_caller(self):
         try:
+            logger.info("Starting as caller...")
             self.status_text.value = "Creating connection..."
             self.update()
             
+            logger.info("Creating SDP offer...")
             sdp_offer = await self.webrtc_handler.create_offer()
+            logger.info(f"SDP offer created: length={len(sdp_offer)} chars")
             
+            if not self.ws_client or not self.ws_client.connected:
+                logger.error("WebSocket not connected, cannot send SDP offer")
+                self.status_text.value = "WebSocket disconnected"
+                self.status_text.color = ft.colors.RED
+                self.update()
+                return
+            
+            logger.info(f"Sending SDP offer via WebSocket: call_id={self.call_id}, to_user={self.remote_user_id}")
             await self.ws_client.send_sdp_offer(
                 call_id=self.call_id,
                 from_user_id=self.local_user_id,
@@ -491,7 +632,7 @@ class VideoCallPage(ft.UserControl):
             self.status_text.value = "Connecting..."
             self.update()
             
-            logger.info("SDP offer sent")
+            logger.info("SDP offer sent successfully")
         
         except Exception as e:
             logger.error(f"Error starting as caller: {e}")
@@ -504,6 +645,55 @@ class VideoCallPage(ft.UserControl):
             return
         
         try:
+            # Kiểm tra frame hợp lệ
+            if frame is None:
+                logger.warning("Remote video frame is None")
+                return
+            
+            # Kiểm tra frame có phải numpy array không
+            import numpy as np
+            if not isinstance(frame, np.ndarray):
+                logger.warning(f"Remote video frame is not numpy array: {type(frame)}")
+                return
+            
+            # Kiểm tra frame có hợp lệ không (không phải trắng/đen hoàn toàn)
+            frame_min = frame.min()
+            frame_max = frame.max()
+            
+            # Logging mỗi 60 frame để debug
+            if not hasattr(self, '_remote_frame_log_counter'):
+                self._remote_frame_log_counter = 0
+            self._remote_frame_log_counter += 1
+            
+            if self._remote_frame_log_counter % 60 == 0:
+                print(f"Remote frame: shape={frame.shape}, min={frame_min}, max={frame_max}, mean={frame.mean():.2f}")
+            
+            # Kiểm tra frame trắng/đen hoàn toàn hoặc quá tối/sáng
+            frame_mean = frame.mean()
+            is_uniform = (frame_min == frame_max and (frame_min == 0 or frame_min == 255))
+            is_too_dark = (frame_mean < 5.0)  # Frame quá tối
+            is_too_bright = (frame_mean > 250.0)  # Frame quá sáng
+            
+            if is_uniform or is_too_dark or is_too_bright:
+                # Frame không hợp lệ, skip frame này
+                if not hasattr(self, '_remote_invalid_frame_count'):
+                    self._remote_invalid_frame_count = 0
+                self._remote_invalid_frame_count += 1
+                if self._remote_invalid_frame_count % 30 == 0:  # Log mỗi 30 frame
+                    reason = []
+                    if is_uniform:
+                        reason.append(f"uniform (min=max={frame_min})")
+                    if is_too_dark:
+                        reason.append(f"too dark (mean={frame_mean:.2f})")
+                    if is_too_bright:
+                        reason.append(f"too bright (mean={frame_mean:.2f})")
+                    logger.warning(f"Skipping invalid remote frame (count: {self._remote_invalid_frame_count}): {', '.join(reason)}")
+                return
+            
+            # Reset counter nếu frame hợp lệ
+            if hasattr(self, '_remote_invalid_frame_count'):
+                self._remote_invalid_frame_count = 0
+            
             # frame từ aiortc là RGB → chuyển sang BGR để encode
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             _, buffer = cv2.imencode('.jpg', frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -515,6 +705,8 @@ class VideoCallPage(ft.UserControl):
         
         except Exception as e:
             logger.error(f"Error processing remote video frame: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def _on_connection_state_change(self, state: str):
         try:
@@ -547,15 +739,31 @@ class VideoCallPage(ft.UserControl):
     
     async def handle_sdp_offer(self, sdp: str):
         try:
+            logger.info(f"handle_sdp_offer called: sdp_length={len(sdp)}")
+            
             if not self.webrtc_handler:
+                logger.error("WebRTC handler is None, cannot handle SDP offer")
                 return
             
             self.status_text.value = "Processing connection..."
             self.update()
             
+            logger.info("Handling remote SDP offer...")
             await self.webrtc_handler.handle_remote_description(sdp, "offer")
-            sdp_answer = await self.webrtc_handler.create_answer()
+            logger.info("Remote SDP offer handled")
             
+            logger.info("Creating SDP answer...")
+            sdp_answer = await self.webrtc_handler.create_answer()
+            logger.info(f"SDP answer created: length={len(sdp_answer)} chars")
+            
+            if not self.ws_client or not self.ws_client.connected:
+                logger.error("WebSocket not connected, cannot send SDP answer")
+                self.status_text.value = "WebSocket disconnected"
+                self.status_text.color = ft.colors.RED
+                self.update()
+                return
+            
+            logger.info(f"Sending SDP answer via WebSocket: call_id={self.call_id}, to_user={self.remote_user_id}")
             await self.ws_client.send_sdp_answer(
                 call_id=self.call_id,
                 from_user_id=self.local_user_id,
@@ -566,7 +774,7 @@ class VideoCallPage(ft.UserControl):
             self.status_text.value = "Connecting..."
             self.update()
             
-            logger.info("SDP answer sent")
+            logger.info("SDP answer sent successfully")
         
         except Exception as e:
             logger.error(f"Error handling SDP offer: {e}")

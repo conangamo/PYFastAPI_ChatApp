@@ -1,7 +1,3 @@
-"""
-Message management dialogs
-Edit and delete message dialogs
-"""
 import flet as ft
 from typing import Optional, Callable
 
@@ -10,7 +6,6 @@ from ..config import config
 
 
 class EditMessageDialog:
-    """Dialog for editing a message"""
     
     def __init__(
         self,
@@ -18,14 +13,6 @@ class EditMessageDialog:
         page: ft.Page,
         on_save: Optional[Callable] = None
     ):
-        """
-        Initialize edit message dialog
-        
-        Args:
-            message: Message to edit
-            page: Flet page
-            on_save: Callback when message is saved (message_id, new_content)
-        """
         self.message = message
         self.page = page
         self.on_save = on_save
@@ -33,7 +20,6 @@ class EditMessageDialog:
         self.content_input = None
     
     def show(self):
-        """Show edit message dialog"""
         self.content_input = ft.TextField(
             value=self.message.content,
             multiline=True,
@@ -70,7 +56,6 @@ class EditMessageDialog:
         self.page.update()
     
     def _handle_save(self):
-        """Handle save button click"""
         new_content = self.content_input.value.strip()
         
         if not new_content:
@@ -83,7 +68,6 @@ class EditMessageDialog:
             return
         
         if new_content == self.message.content:
-            # No changes
             self._close()
             return
         
@@ -93,14 +77,12 @@ class EditMessageDialog:
             self.on_save(self.message.id, new_content)
     
     def _close(self):
-        """Close dialog"""
         if self.dialog:
             self.dialog.open = False
             self.page.update()
 
 
 class DeleteMessageDialog:
-    """Dialog for confirming message deletion"""
     
     def __init__(
         self,
@@ -108,21 +90,12 @@ class DeleteMessageDialog:
         page: ft.Page,
         on_confirm: Optional[Callable] = None
     ):
-        """
-        Initialize delete confirmation dialog
-        
-        Args:
-            message: Message to delete
-            page: Flet page
-            on_confirm: Callback when deletion is confirmed (message_id)
-        """
         self.message = message
         self.page = page
         self.on_confirm = on_confirm
         self.dialog = None
     
     def show(self):
-        """Show delete confirmation dialog"""
         self.dialog = ft.AlertDialog(
             title=ft.Text("Delete Message?"),
             content=ft.Column([
@@ -171,14 +144,12 @@ class DeleteMessageDialog:
         self.page.update()
     
     def _handle_confirm(self):
-        """Handle confirm button click"""
         self._close()
         
         if self.on_confirm:
             self.on_confirm(self.message.id)
     
     def _close(self):
-        """Close dialog"""
         if self.dialog:
             self.dialog.open = False
             self.page.update()

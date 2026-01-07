@@ -1,33 +1,21 @@
-"""
-Conversation Settings Dialog
-Settings for each conversation (1-1 or group)
-"""
+
 import flet as ft
-from typing import Callable, Optional
+from typing import Callable, Optional, Coroutine, Any
 from ..models import Conversation
 from ..api.client import get_api_client
 from ..config import config
 
 
 class ConversationSettingsDialog:
-    """Settings dialog for conversation"""
     
     def __init__(
         self,
         page: ft.Page,
         conversation: Conversation,
         current_user_id: str,
-        on_action: Callable[[str], None]  # Callback: "unfriend", "delete", "leave", "add_member"
+        on_action: Callable[[str], Coroutine[Any, Any, None]]  # Async callback: "unfriend", "delete", "leave", "add_member"
     ):
-        """
-        Initialize conversation settings dialog
-        
-        Args:
-            page: Flet page
-            conversation: Conversation object
-            current_user_id: Current user ID
-            on_action: Callback when action is performed
-        """
+
         self.page = page
         self.conversation = conversation
         self.current_user_id = current_user_id
@@ -40,7 +28,6 @@ class ConversationSettingsDialog:
             self._build_group_chat_ui()
     
     def _build_direct_chat_ui(self):
-        """Build UI for direct chat (1-1)"""
         # Get other user info
         other_user = None
         for p in self.conversation.participants:
@@ -89,7 +76,6 @@ class ConversationSettingsDialog:
         )
     
     def _build_group_chat_ui(self):
-        """Build UI for group chat"""
         is_creator = self.conversation.created_by == self.current_user_id
         
         controls = [
@@ -138,12 +124,12 @@ class ConversationSettingsDialog:
         )
     
     async def _handle_unfriend(self):
-        """Handle unfriend action"""
         try:
             api = get_api_client()
             await api.unfriend_in_conversation(self.conversation.id)
             
-            self.on_action("unfriend")
+            # Call async callback
+            await self.on_action("unfriend")
             self._handle_close(None)
             
             # Show success message
@@ -155,7 +141,7 @@ class ConversationSettingsDialog:
             self.page.update()
             
         except Exception as e:
-            print(f"❌ Error unfriending: {e}")
+            print(f"Error unfriending: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"Lỗi: {str(e)}"),
                 bgcolor=config.ERROR_COLOR
@@ -164,7 +150,6 @@ class ConversationSettingsDialog:
             self.page.update()
     
     async def _handle_delete(self):
-        """Handle delete conversation"""
         # Confirm dialog
         def confirm_delete(e):
             self.page.close_dialog()
@@ -188,12 +173,12 @@ class ConversationSettingsDialog:
         self.page.update()
     
     async def _confirm_delete(self):
-        """Confirm and execute delete"""
         try:
             api = get_api_client()
             await api.leave_conversation(self.conversation.id)
             
-            self.on_action("delete")
+            # Call async callback
+            await self.on_action("delete")
             self._handle_close(None)
             
             # Show success message
@@ -238,12 +223,12 @@ class ConversationSettingsDialog:
         self.page.update()
     
     async def _confirm_leave(self):
-        """Confirm and execute leave"""
         try:
             api = get_api_client()
             await api.leave_conversation(self.conversation.id)
             
-            self.on_action("leave")
+            # Call async callback
+            await self.on_action("leave")
             self._handle_close(None)
             
             # Show success message
@@ -255,7 +240,7 @@ class ConversationSettingsDialog:
             self.page.update()
             
         except Exception as e:
-            print(f"❌ Error leaving group: {e}")
+            print(f"Error leaving group: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"Lỗi: {str(e)}"),
                 bgcolor=config.ERROR_COLOR
@@ -269,8 +254,9 @@ class ConversationSettingsDialog:
         self.page.close_dialog()
         self.page.update()
         
-        # Call callback to open add member dialog
-        self.on_action("add_member")
+        # Call async callback to open add member dialog
+        if self.page:
+            self.page.run_task(self.on_action, "add_member")
     
     def _handle_close(self, e):
         """Close dialog"""

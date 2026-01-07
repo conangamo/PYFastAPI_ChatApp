@@ -89,11 +89,14 @@ class WebRTCHandler:
         
         @self.pc.on("track")
         def on_track(track):
-            logger.info(f"Remote track received: {track.kind}")
+            logger.info(f"=== Remote track received: kind={track.kind}, id={track.id}, readyState={track.readyState} ===")
             if track.kind == "video":
+                logger.info("Processing remote video track...")
                 self._handle_remote_video_track(track)
             elif track.kind == "audio":
                 logger.info("Remote audio track received (auto-played by browser)")
+            else:
+                logger.warning(f"Unknown track kind: {track.kind}")
         
         @self.pc.on("icecandidate")
         def on_icecandidate(candidate):
@@ -154,14 +157,20 @@ class WebRTCHandler:
     
     def _handle_remote_video_track(self, track):
         try:
+            logger.info(f"_handle_remote_video_track called: track={track}, readyState={track.readyState}")
+            logger.info(f"on_remote_video_frame callback: {self.on_remote_video_frame}")
+            
             self.remote_video_processor = RemoteVideoTrackProcessor(
                 on_frame=self.on_remote_video_frame
             )
             
+            logger.info("Creating task to process remote video track...")
             asyncio.create_task(self.remote_video_processor.process_track(track))
-            logger.info("Remote video track processing started")
+            logger.info("Remote video track processing task created")
         except Exception as e:
             logger.error(f"Error handling remote video track: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def _handle_ice_candidate(self, candidate: RTCIceCandidate):
         if not self.ws_client or not self.ws_client.connected:

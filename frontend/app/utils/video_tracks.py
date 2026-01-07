@@ -80,9 +80,21 @@ class OpenCVVideoTrack(VideoStreamTrack):
                         frame_min = test_frame.min()
                         frame_max = test_frame.max()
                         
-                        # Check if frame is valid (not all black/white)
-                        if frame_min == frame_max and (frame_min == 0 or frame_min == 255):
-                            logger.warning(f"Camera {cam_idx} opened but frame is uniform (min=max={frame_min}), trying next camera")
+                        # Check if frame is valid (not all black/white or too dark/bright)
+                        frame_mean = test_frame.mean()
+                        is_uniform = (frame_min == frame_max and (frame_min == 0 or frame_min == 255))
+                        is_too_dark = (frame_mean < 5.0)  # Frame quá tối
+                        is_too_bright = (frame_mean > 250.0)  # Frame quá sáng
+                        
+                        if is_uniform or is_too_dark or is_too_bright:
+                            reason = []
+                            if is_uniform:
+                                reason.append(f"uniform (min=max={frame_min})")
+                            if is_too_dark:
+                                reason.append(f"too dark (mean={frame_mean:.2f})")
+                            if is_too_bright:
+                                reason.append(f"too bright (mean={frame_mean:.2f})")
+                            logger.warning(f"Camera {cam_idx} opened but frame invalid: {', '.join(reason)}, trying next camera")
                             test_cap.release()
                             continue
                         
@@ -90,7 +102,7 @@ class OpenCVVideoTrack(VideoStreamTrack):
                         self.cap = test_cap
                         self.camera_index = cam_idx  # Update to actual camera index used
                         camera_opened = True
-                        logger.info(f"OpenCVVideoTrack started: camera={cam_idx}, {self.width}x{self.height}@{self.fps}fps, frame_shape={test_frame.shape}, stats: min={frame_min}, max={frame_max}, mean={test_frame.mean():.2f}")
+                        logger.info(f"OpenCVVideoTrack started: camera={cam_idx}, {self.width}x{self.height}@{self.fps}fps, frame_shape={test_frame.shape}, stats: min={frame_min}, max={frame_max}, mean={frame_mean:.2f}")
                         break
                     else:
                         logger.warning(f"Camera {cam_idx} opened but cannot read frames, trying next camera")
@@ -131,17 +143,30 @@ class OpenCVVideoTrack(VideoStreamTrack):
             logger.warning("Failed to read frame from camera, using black frame")
             frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         else:
-            # Check if frame is valid (not all black/white - indicates white screen issue)
+            # Check if frame is valid (not all black/white or too dark/bright)
             frame_min = frame.min()
             frame_max = frame.max()
-            if frame_min == frame_max and (frame_min == 0 or frame_min == 255):
-                # Frame is all black (0) or all white (255) - skip this frame
+            frame_mean = frame.mean()
+            
+            is_uniform = (frame_min == frame_max and (frame_min == 0 or frame_min == 255))
+            is_too_dark = (frame_mean < 5.0)  # Frame quá tối
+            is_too_bright = (frame_mean > 250.0)  # Frame quá sáng
+            
+            if is_uniform or is_too_dark or is_too_bright:
+                # Frame không hợp lệ, skip frame này
                 # Don't log every time to avoid spam, only log occasionally
-                if not hasattr(self, '_white_frame_warning_count'):
-                    self._white_frame_warning_count = 0
-                self._white_frame_warning_count += 1
-                if self._white_frame_warning_count % 30 == 0:  # Log mỗi 30 frame
-                    logger.warning(f"Frame appears to be uniform (min=max={frame_min}), skipping. "
+                if not hasattr(self, '_invalid_frame_warning_count'):
+                    self._invalid_frame_warning_count = 0
+                self._invalid_frame_warning_count += 1
+                if self._invalid_frame_warning_count % 30 == 0:  # Log mỗi 30 frame
+                    reason = []
+                    if is_uniform:
+                        reason.append(f"uniform (min=max={frame_min})")
+                    if is_too_dark:
+                        reason.append(f"too dark (mean={frame_mean:.2f})")
+                    if is_too_bright:
+                        reason.append(f"too bright (mean={frame_mean:.2f})")
+                    logger.warning(f"Frame invalid: {', '.join(reason)}, skipping. "
                                  f"This may indicate camera conflict or warm-up needed.")
                 # Use previous frame or black frame instead
                 if hasattr(self, '_last_valid_frame'):
@@ -149,10 +174,10 @@ class OpenCVVideoTrack(VideoStreamTrack):
                 else:
                     frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
             else:
-                # Frame hợp lệ, lưu lại để dùng nếu frame sau bị trắng
+                # Frame hợp lệ, lưu lại để dùng nếu frame sau bị invalid
                 self._last_valid_frame = frame.copy()
-                if hasattr(self, '_white_frame_warning_count'):
-                    self._white_frame_warning_count = 0
+                if hasattr(self, '_invalid_frame_warning_count'):
+                    self._invalid_frame_warning_count = 0
         
         if frame.shape[1] != self.width or frame.shape[0] != self.height:
             frame = cv2.resize(frame, (self.width, self.height))
@@ -183,6 +208,7 @@ class RemoteVideoTrackProcessor:
         self.running = True
         logger.info("RemoteVideoTrackProcessor started")
         
+        frame_count = 0
         try:
             while self.running:
                 try:
@@ -190,15 +216,27 @@ class RemoteVideoTrackProcessor:
                     img = frame.to_ndarray(format="rgb24")
                     self.current_frame = img
                     
+                    frame_count += 1
+                    # Logging mỗi 60 frame để debug
+                    if frame_count % 60 == 0:
+                        if img is not None and img.size > 0:
+                            logger.info(f"Remote video frame received: shape={img.shape}, min={img.min()}, max={img.max()}, mean={img.mean():.2f}")
+                        else:
+                            logger.warning(f"Remote video frame is empty or invalid")
+                    
                     if self.on_frame:
                         try:
                             self.on_frame(img)
                         except Exception as e:
                             logger.error(f"Error in on_frame callback: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                 
                 except Exception as e:
                     if self.running:
                         logger.error(f"Error processing remote video frame: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
                     break
         
         except asyncio.CancelledError:

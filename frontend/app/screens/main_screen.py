@@ -25,7 +25,6 @@ from ..dialogs import (
     NewChatDialog,
     DirectChatDialog,
     GroupChatDialog,
-    GroupInfoDialog,
     FriendChatDialog,
     FriendRequestsDialog,
     GroupCreationDialog,
@@ -290,9 +289,16 @@ class MainChatScreen(ft.UserControl):
         """Called when component will unmount"""
         print("👋 MainChatScreen unmounting...")
         self._is_unmounted = True  # Mark as unmounted
-        # Disconnect WebSocket
-        if self.ws_client and self.page:
-            self.page.run_task(self.ws_client.disconnect)
+        
+        # Don't disconnect WebSocket if we're opening a video call page
+        # The video call page needs the WebSocket connection for WebRTC signaling
+        if self.current_call_page:
+            print("Video call page is active, keeping WebSocket connection open")
+        else:
+            # Only disconnect WebSocket if not opening video call
+            if self.ws_client and self.page:
+                self.page.run_task(self.ws_client.disconnect)
+        
         # Stop periodic refresh
         # Note: The periodic refresh task will check for page availability and stop itself
     
@@ -545,15 +551,10 @@ class MainChatScreen(ft.UserControl):
         )
         
         if conv.type.value == "group":
+            # Group chat: chỉ hiển thị nút Cài đặt, ẩn Group Info theo yêu cầu
             self.chat_header_row.controls = [
                 self.chat_header,
                 ft.Row([
-                    ft.IconButton(
-                        icon=ft.icons.INFO_OUTLINE,
-                        tooltip="Group Info",
-                        icon_color=config.PRIMARY_COLOR,
-                        on_click=lambda e: self.show_group_info()
-                    ),
                     settings_button
                 ], spacing=5)
             ]
@@ -1254,28 +1255,6 @@ class MainChatScreen(ft.UserControl):
         dialog.open = False
         self.page.update()
     
-    def show_group_info(self):
-        """Show group information and management dialog"""
-        if not self.current_conversation or self.current_conversation.type.value != "group":
-            return
-        
-        # TODO: Implement add/remove members handlers
-        async def handle_add_members(member_ids: List[str]):
-            print(f"Adding members: {member_ids}")
-            # Backend API call to add members
-        
-        async def handle_remove_member(user_id: str):
-            print(f"Removing member: {user_id}")
-            # Backend API call to remove member
-        
-        dialog = GroupInfoDialog(
-            conversation=self.current_conversation,
-            current_user=self.user,
-            on_add_members=handle_add_members,
-            on_remove_member=handle_remove_member
-        )
-        dialog.open(self.page)
-    
     async def open_conversation_settings(self):
         """Open conversation settings dialog"""
         if not self.current_conversation:
@@ -1871,6 +1850,9 @@ class MainChatScreen(ft.UserControl):
             elif msg_type in ["sdp_offer", "sdp_answer", "ice_candidate"]:
                 # Forward to video call page if open
                 if self.current_call_page:
+                    if not self.page:
+                        print(f"Warning: Page is None, cannot forward {msg_type} to video call page")
+                        return
                     if msg_type == "sdp_offer":
                         self.page.run_task(
                             self.current_call_page.handle_sdp_offer,

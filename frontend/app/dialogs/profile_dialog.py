@@ -1,6 +1,3 @@
-"""
-Profile dialog components
-"""
 import flet as ft
 from typing import Optional, Callable
 
@@ -10,7 +7,6 @@ from ..utils.formatters import format_timestamp
 
 
 class ProfileDialog:
-    """Profile view dialog"""
     
     def __init__(
         self,
@@ -18,14 +14,7 @@ class ProfileDialog:
         page: ft.Page,
         on_edit: Optional[Callable] = None
     ):
-        """
-        Initialize profile dialog
-        
-        Args:
-            user: User to display
-            page: Flet page
-            on_edit: Callback when edit is clicked
-        """
+
         self.user = user
         self.page = page
         self.on_edit = on_edit
@@ -78,24 +67,20 @@ class ProfileDialog:
         self.page.update()
     
     def _handle_edit(self, e):
-        """Handle edit button click"""
         self.close()
         if self.on_edit:
             self.on_edit()
     
     def _close(self, e):
-        """Close dialog"""
         self.close()
     
     def close(self):
-        """Close dialog"""
         if self.dialog:
             self.dialog.open = False
             self.page.update()
 
 
-class EditProfileDialog:
-    """Edit profile dialog"""
+class EditProfileDialog:        
     
     def __init__(
         self,
@@ -103,14 +88,7 @@ class EditProfileDialog:
         page: ft.Page,
         on_save: Optional[Callable] = None
     ):
-        """
-        Initialize edit profile dialog
         
-        Args:
-            user: User to edit
-            page: Flet page
-            on_save: Callback when saved (display_name, email)
-        """
         self.user = user
         self.page = page
         self.on_save = on_save
@@ -130,7 +108,6 @@ class EditProfileDialog:
         )
     
     def show(self):
-        """Show edit profile dialog"""
         self.dialog = ft.AlertDialog(
             title=ft.Text("Edit Profile"),
             content=ft.Container(
@@ -164,11 +141,9 @@ class EditProfileDialog:
         self.page.update()
     
     def _handle_save(self, e):
-        """Handle save button click"""
         display_name = self.display_name_input.value
         email = self.email_input.value
         
-        # Validate
         if not display_name or not display_name.strip():
             self._show_error("Display name is required")
             return
@@ -183,7 +158,6 @@ class EditProfileDialog:
             self.on_save(display_name.strip(), email.strip())
     
     def _show_error(self, message: str):
-        """Show error notification"""
         self.page.snack_bar = ft.SnackBar(
             content=ft.Text(message),
             bgcolor=config.ERROR_COLOR
@@ -192,11 +166,9 @@ class EditProfileDialog:
         self.page.update()
     
     def _close(self, e):
-        """Close dialog"""
         self.close()
     
     def close(self):
-        """Close dialog"""
         if self.dialog:
             self.dialog.open = False
             self.page.update()

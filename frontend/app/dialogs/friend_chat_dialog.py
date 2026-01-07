@@ -1,6 +1,3 @@
-"""
-Friend Chat Dialog - Search users, send friend requests, start chat
-"""
 import flet as ft
 from typing import Optional, Callable, List, Dict, Any
 import httpx
@@ -12,7 +9,6 @@ from ..api.client import APIClient
 
 
 class FriendChatDialog:
-    """Dialog for searching users, sending friend requests, and starting chats"""
     
     def __init__(
         self,
@@ -21,15 +17,6 @@ class FriendChatDialog:
         current_user: User,
         on_chat_created: Optional[Callable] = None
     ):
-        """
-        Initialize friend chat dialog
-        
-        Args:
-            page: Flet page
-            api_client: API client instance
-            current_user: Current logged-in user
-            on_chat_created: Callback when chat is created/friend is accepted
-        """
         self.page = page
         self.api_client = api_client
         self.current_user = current_user
@@ -43,7 +30,6 @@ class FriendChatDialog:
         self.empty_state = None
         
     def show(self):
-        """Show friend chat dialog"""
         # Search field
         self.search_field = ft.TextField(
             label="Search users",
@@ -130,7 +116,6 @@ class FriendChatDialog:
         self.page.update()
     
     async def _handle_search(self, e):
-        """Handle search button click"""
         query = self.search_field.value
         print(f"[DEBUG] Searching for: {query}")
         
@@ -173,11 +158,9 @@ class FriendChatDialog:
             self.page.update()
     
     def _display_results(self, users: List[Dict[str, Any]]):
-        """Display search results"""
         self.search_results.controls.clear()
         
         if not users:
-            # No results
             self.search_results.controls.append(
                 ft.Container(
                     content=ft.Column([
@@ -289,7 +272,6 @@ class FriendChatDialog:
         )
     
     async def _send_friend_request(self, user_id: str, username: str):
-        """Send friend request to user"""
         try:
             response = await self.api_client.post(
                 "/friendships/send-request",
@@ -308,7 +290,6 @@ class FriendChatDialog:
             self._show_error(f"Error: {str(e)}")
     
     async def _start_chat(self, user_id: str, username: str):
-        """Start chat with friend (create conversation)"""
         try:
             # Create direct conversation
             response = await self.api_client.post(
@@ -335,7 +316,6 @@ class FriendChatDialog:
             self._show_error(f"Error: {str(e)}")
     
     def _show_success(self, message: str):
-        """Show success snackbar"""
         self.page.snack_bar = ft.SnackBar(
             content=ft.Text(message),
             bgcolor=ft.colors.GREEN
@@ -344,7 +324,6 @@ class FriendChatDialog:
         self.page.update()
     
     def _show_error(self, message: str):
-        """Show error snackbar"""
         self.page.snack_bar = ft.SnackBar(
             content=ft.Text(message),
             bgcolor=ft.colors.RED
@@ -353,11 +332,9 @@ class FriendChatDialog:
         self.page.update()
     
     def _close(self, e):
-        """Close dialog"""
         self.close()
     
     def close(self):
-        """Close dialog"""
         if self.dialog:
             self.dialog.open = False
             self.page.update()

@@ -1,7 +1,3 @@
-"""
-Chat dialog components
-New chat, group creation, group info dialogs
-"""
 import flet as ft
 from typing import Optional, Callable, List
 
@@ -11,7 +7,6 @@ from ..utils.formatters import format_timestamp
 
 
 class NewChatDialog:
-    """New chat type selection dialog"""
     
     def __init__(
         self,
@@ -19,21 +14,12 @@ class NewChatDialog:
         on_direct_chat: Optional[Callable] = None,
         on_group_chat: Optional[Callable] = None
     ):
-        """
-        Initialize new chat dialog
-        
-        Args:
-            page: Flet page
-            on_direct_chat: Callback for direct chat selection
-            on_group_chat: Callback for group chat selection
-        """
         self.page = page
         self.on_direct_chat = on_direct_chat
         self.on_group_chat = on_group_chat
         self.dialog = None
     
     def show(self):
-        """Show new chat type selection dialog"""
         self.dialog = ft.AlertDialog(
             title=ft.Text("Start a conversation"),
             content=ft.Container(
@@ -65,30 +51,25 @@ class NewChatDialog:
         self.page.update()
     
     def _handle_direct_chat(self, e):
-        """Handle direct chat selection"""
         self.close()
         if self.on_direct_chat:
             self.on_direct_chat()
     
     def _handle_group_chat(self, e):
-        """Handle group chat selection"""
         self.close()
         if self.on_group_chat:
             self.on_group_chat()
     
     def _close(self, e):
-        """Close dialog"""
         self.close()
     
     def close(self):
-        """Close dialog"""
         if self.dialog:
             self.dialog.open = False
             self.page.update()
 
 
 class DirectChatDialog:
-    """Direct chat user selection dialog"""
     
     def __init__(
         self,
@@ -96,21 +77,12 @@ class DirectChatDialog:
         page: ft.Page,
         on_select: Optional[Callable] = None
     ):
-        """
-        Initialize direct chat dialog
-        
-        Args:
-            users: List of users to choose from
-            page: Flet page
-            on_select: Callback when user is selected (user)
-        """
         self.users = users
         self.page = page
         self.on_select = on_select
         self.dialog = None
     
     def show(self):
-        """Show user selection dialog"""
         # Create user list
         user_list = ft.ListView(
             controls=[
@@ -143,24 +115,20 @@ class DirectChatDialog:
         self.page.update()
     
     def _handle_select(self, user: User):
-        """Handle user selection"""
         self.close()
         if self.on_select:
             self.on_select(user)
     
     def _close(self, e):
-        """Close dialog"""
         self.close()
     
     def close(self):
-        """Close dialog"""
         if self.dialog:
             self.dialog.open = False
             self.page.update()
 
 
 class GroupChatDialog:
-    """Group chat creation dialog"""
     
     def __init__(
         self,
@@ -168,14 +136,6 @@ class GroupChatDialog:
         page: ft.Page,
         on_create: Optional[Callable] = None
     ):
-        """
-        Initialize group chat dialog
-        
-        Args:
-            users: List of users to choose from
-            page: Flet page
-            on_create: Callback when created (group_name, selected_users)
-        """
         self.users = users
         self.page = page
         self.on_create = on_create
@@ -197,7 +157,6 @@ class GroupChatDialog:
         )
     
     def show(self):
-        """Show group creation dialog"""
         # Create checkboxes for each user
         def create_user_checkbox(user):
             checkbox = ft.Checkbox(
@@ -244,7 +203,6 @@ class GroupChatDialog:
         self.page.update()
     
     def _handle_member_toggle(self, user: User, is_selected: bool):
-        """Handle member checkbox toggle"""
         if is_selected:
             if user not in self.selected_members:
                 self.selected_members.append(user)
@@ -257,7 +215,6 @@ class GroupChatDialog:
         self.page.update()
     
     def _handle_create(self, e):
-        """Handle create button click"""
         group_name = self.group_name_input.value
         
         # Validate
@@ -284,31 +241,21 @@ class GroupChatDialog:
         self.page.update()
     
     def _close(self, e):
-        """Close dialog"""
         self.close()
     
     def close(self):
-        """Close dialog"""
         if self.dialog:
             self.dialog.open = False
             self.page.update()
 
 
 class GroupInfoDialog:
-    """Group information dialog"""
     
     def __init__(
         self,
         conversation: Conversation,
         page: ft.Page
     ):
-        """
-        Initialize group info dialog
-        
-        Args:
-            conversation: Group conversation
-            page: Flet page
-        """
         self.conversation = conversation
         self.page = page
         self.dialog = None
